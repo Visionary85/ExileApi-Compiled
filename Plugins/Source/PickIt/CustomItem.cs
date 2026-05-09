@@ -7,7 +7,7 @@ using ExileCore.PoEMemory.Components;
 using ExileCore.PoEMemory.Elements;
 using ExileCore.PoEMemory.MemoryObjects;
 using ExileCore.Shared.Enums;
-using Map = ExileCore.PoEMemory.Components.Map;
+using Map = ExileCore.PoEMemory.Components.MapKey;
 
 namespace PickIt
 {
