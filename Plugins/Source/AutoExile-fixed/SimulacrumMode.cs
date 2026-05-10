@@ -29,6 +29,11 @@ namespace AutoExile.Modes
         // Hideout/loop tracking
         private bool _mapCompleted;
         private string _lastAreaName = "";
+        private DateTime _mapEnteredAt = DateTime.MinValue;
+
+        // Fragment safety: stop if too many consecutive runs abort without completing even wave 1
+        private int _consecutiveFailedRuns;
+        private const int MaxConsecutiveFailedRuns = 3;
 
         // Loot tracking — only record on confirmed pickup
         private DateTime _lastLootScan = DateTime.MinValue;
@@ -83,6 +88,8 @@ namespace AutoExile.Modes
             _wasSearching = false;
             _waveStartAttempts = 0;
             _betweenWaveStartTime = DateTime.MinValue;
+            _mapEnteredAt = DateTime.MinValue;
+            _consecutiveFailedRuns = 0;
 
             _combatEngageTime = DateTime.MinValue;
             _combatEngageCount = 0;
@@ -175,11 +182,24 @@ namespace AutoExile.Modes
                     StatusText = _hideoutFlow.Status;
                     if (signal == HideoutSignal.PortalTimeout)
                     {
+                        _consecutiveFailedRuns++;
                         _state.Reset();
+                        if (_consecutiveFailedRuns >= MaxConsecutiveFailedRuns)
+                        {
+                            _phase = SimPhase.Idle;
+                            StatusText = $"Stopped: no re-entry portal found on {_consecutiveFailedRuns} " +
+                                         "consecutive runs. Check the hideout and fragment tab settings.";
+                            break;
+                        }
                         _phase = SimPhase.InHideout;
                         _phaseStartTime = DateTime.Now;
                         StartHideoutFlow(ctx);
                         StatusText = "No portal found — starting new run";
+                    }
+                    else if (signal == HideoutSignal.NoFragments)
+                    {
+                        _phase = SimPhase.Idle;
+                        StatusText = "Stopped: out of simulacrum fragments. Restock and restart.";
                     }
                     break;
 
@@ -229,6 +249,7 @@ namespace AutoExile.Modes
                 if (_mapCompleted)
                 {
                     // Map completed — start new cycle
+                    _consecutiveFailedRuns = 0;
                     _state.RecordRunComplete();
                     _state.Reset();
                     _phase = SimPhase.InHideout;
@@ -249,19 +270,53 @@ namespace AutoExile.Modes
                 else if (_state.DeathCount >= ctx.Settings.Run.MaxDeaths.Value)
                 {
                     // Too many deaths — start fresh
+                    _consecutiveFailedRuns++;
                     _state.RecordRunComplete();
                     _state.Reset();
                     _phase = SimPhase.InHideout;
                     _phaseStartTime = DateTime.Now;
                     _lootTracker.ResetCount();
+                    if (_consecutiveFailedRuns >= MaxConsecutiveFailedRuns)
+                    {
+                        // Too many back-to-back aborted runs — stop to prevent burning all fragments
+                        _phase = SimPhase.Idle;
+                        StatusText = $"Stopped: {_consecutiveFailedRuns} consecutive failed runs (deaths). " +
+                                     "Fix the character build or reduce MaxDeaths, then restart.";
+                        return;
+                    }
                     StartHideoutFlow(ctx);
                     StatusText = "Too many deaths — starting new run";
                 }
                 else
                 {
-                    _phase = SimPhase.InHideout;
+                    // Returned to hideout without dying and without completing the map.
+                    // This can happen if the character walked out through the entrance portal
+                    // or the game kicked them out. Try to re-enter via an existing portal first
+                    // before consuming a new fragment.
+                    var timeInMap = _mapEnteredAt != DateTime.MinValue
+                        ? (DateTime.Now - _mapEnteredAt).TotalSeconds
+                        : 0;
+
+                    if (timeInMap > 0 && timeInMap < 30)
+                    {
+                        // Extremely short map visit — very suspicious. Likely walked out of the
+                        // entrance portal accidentally. Increment failed-run counter.
+                        _consecutiveFailedRuns++;
+                        if (_consecutiveFailedRuns >= MaxConsecutiveFailedRuns)
+                        {
+                            _phase = SimPhase.Idle;
+                            StatusText = $"Stopped: exiting simulacrum within {timeInMap:F0}s on " +
+                                         $"{_consecutiveFailedRuns} consecutive runs. Check the bot " +
+                                         "is not clicking the entrance portal accidentally.";
+                            return;
+                        }
+                    }
+
+                    // Try portal re-entry before burning a new fragment
+                    _phase = SimPhase.EnterPortal;
                     _phaseStartTime = DateTime.Now;
-                    StartHideoutFlow(ctx);
+                    _hideoutFlow.StartPortalReentry();
+                    StatusText = "Returned to hideout unexpectedly — checking for re-entry portal";
                 }
             }
             else
@@ -286,6 +341,7 @@ namespace AutoExile.Modes
                         ctx.Settings.Build.BlinkRange.Value);
                 }
 
+                _mapEnteredAt = DateTime.Now;
                 _lootTracker.ResetCount();
                 StatusText = "Entered map — finding monolith";
             }
@@ -997,21 +1053,21 @@ namespace AutoExile.Modes
 
         /// <summary>
         /// Try to find and click the monolith's interaction label rendered by the game.
-        /// These show up in the VisibleGroundItemLabels list for interactable entities.
+        /// Uses ItemsOnGroundLabelsVisible (the working API) to find the entity label.
         /// </summary>
         private bool TryClickEntityLabel(GameController gc, Entity monolith)
         {
             try
             {
-                var labels = gc.IngameState.IngameUi.ItemsOnGroundLabelElement.VisibleGroundItemLabels;
+                var labels = gc.IngameState.IngameUi.ItemsOnGroundLabelsVisible;
                 if (labels == null) return false;
 
                 foreach (var label in labels)
                 {
-                    if (label.Entity?.Id != monolith.Id) continue;
+                    if (label.ItemOnGround?.Id != monolith.Id) continue;
                     if (label.Label == null || !label.Label.IsVisible) continue;
 
-                    if (BotInput.ClickLabel(gc, label.ClientRect))
+                    if (BotInput.ClickLabel(gc, label.Label.GetClientRect()))
                     {
                         _lastActionTime = DateTime.Now;
                         return true;
@@ -1255,6 +1311,7 @@ namespace AutoExile.Modes
             _phase = SimPhase.ExitMap;
             _phaseStartTime = DateTime.Now;
             _mapCompleted = true;
+            _consecutiveFailedRuns = 0; // Reached exit phase — reset failure counter
             ctx.LootTracker.RecordMapComplete();
 
             // Cancel any in-flight systems
