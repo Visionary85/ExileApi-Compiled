@@ -53,8 +53,10 @@ namespace AutoExile.Modes
         private bool _wasSearching;
 
         // Wave start retry tracking — bail if we can't start the next wave
-        private int _waveStartAttempts;
-        private const int MaxWaveStartAttempts = 10;
+        private DateTime _waveStartFirstTryTime = DateTime.MinValue;
+        private DateTime _waveStartLastClickTime = DateTime.MinValue;
+        private const float WaveStartTimeoutSeconds = 45f;
+        private const float WaveStartClickCooldownMs = 2000f; // wait 2s between monolith clicks
         private DateTime _betweenWaveStartTime = DateTime.MinValue;
         private const float BetweenWaveTimeoutSeconds = 120f;
 
@@ -86,10 +88,11 @@ namespace AutoExile.Modes
             _lootTracker.Reset();
             _lastKnownWave = 0;
             _wasSearching = false;
-            _waveStartAttempts = 0;
             _betweenWaveStartTime = DateTime.MinValue;
             _mapEnteredAt = DateTime.MinValue;
             _consecutiveFailedRuns = 0;
+            _waveStartFirstTryTime = DateTime.MinValue;
+            _waveStartLastClickTime = DateTime.MinValue;
 
             _combatEngageTime = DateTime.MinValue;
             _combatEngageCount = 0;
@@ -520,7 +523,8 @@ namespace AutoExile.Modes
                 ctx.Loot.ClearFailed(); // items that failed in earlier waves may be pickable now
                 _blacklistedMonsters.Clear(); // new wave = fresh monster spawns
                 _wasSearching = false;
-                _waveStartAttempts = 0;
+                _waveStartFirstTryTime = DateTime.MinValue;
+                _waveStartLastClickTime = DateTime.MinValue;
                 _betweenWaveStartTime = DateTime.MinValue;
             }
 
@@ -792,20 +796,22 @@ namespace AutoExile.Modes
                 return;
             }
 
-            if (_waveStartAttempts >= MaxWaveStartAttempts)
+            if (_waveStartFirstTryTime != DateTime.MinValue &&
+                (DateTime.Now - _waveStartFirstTryTime).TotalSeconds > WaveStartTimeoutSeconds)
             {
-                Decision = $"Failed to start wave after {MaxWaveStartAttempts} attempts → LootSweep";
+                Decision = $"Failed to start wave after {WaveStartTimeoutSeconds}s → LootSweep";
                 _phase = SimPhase.LootSweep;
                 _phaseStartTime = DateTime.Now;
                 _sweepNearMonolith = false;
                 _lastEmptyScanAt = DateTime.MinValue;
-                StatusText = $"Can't start wave {_state.CurrentWave + 1} — exiting after {MaxWaveStartAttempts} failed attempts";
+                StatusText = $"Can't start wave {_state.CurrentWave + 1} — no wave started in {WaveStartTimeoutSeconds}s";
                 return;
             }
 
             if (DateTime.Now >= _state.CanStartWaveAt && _state.CurrentWave < 15)
             {
-                Decision = $"Wave {_state.CurrentWave}/15 → StartWave (attempt {_waveStartAttempts}/{MaxWaveStartAttempts})";
+                var elapsed = _waveStartFirstTryTime == DateTime.MinValue ? 0.0 : (DateTime.Now - _waveStartFirstTryTime).TotalSeconds;
+                Decision = $"Wave {_state.CurrentWave}/15 → StartWave ({elapsed:F1}s / {WaveStartTimeoutSeconds}s)";
                 TickStartWave(ctx);
                 return;
             }
@@ -983,7 +989,8 @@ namespace AutoExile.Modes
         /// <summary>
         /// Navigate to monolith and click it to start the next wave.
         /// Tries entity label first (most reliable), falls back to WorldToScreen click.
-        /// Only increments _waveStartAttempts when a click is actually sent.
+        /// Clicks the monolith to start the next wave. Uses a per-click cooldown of
+        /// WaveStartClickCooldownMs so the game has time to register each click.
         /// </summary>
         private void TickStartWave(BotContext ctx)
         {
@@ -1009,7 +1016,12 @@ namespace AutoExile.Modes
 
             ctx.Navigation.Stop(gc);
 
-            if (!ModeHelpers.CanAct(_lastActionTime, MajorActionCooldownMs)) return;
+            // Track when we first tried to start this wave
+            if (_waveStartFirstTryTime == DateTime.MinValue)
+                _waveStartFirstTryTime = DateTime.Now;
+
+            // Use a longer per-click cooldown so the game can register each interaction
+            if (!ModeHelpers.CanAct(_waveStartLastClickTime, WaveStartClickCooldownMs)) return;
 
             // Resolve monolith entity
             Entity? monolith = null;
@@ -1030,24 +1042,25 @@ namespace AutoExile.Modes
                 return;
             }
 
+            var elapsed = (DateTime.Now - _waveStartFirstTryTime).TotalSeconds;
+
             // Try 1: Click entity label if visible (game renders a hoverable label on the monolith)
             if (TryClickEntityLabel(gc, monolith))
             {
-                _waveStartAttempts++;
-                StatusText = $"Clicking monolith label to start wave {_state.CurrentWave + 1} (attempt {_waveStartAttempts})";
+                _waveStartLastClickTime = DateTime.Now;
+                StatusText = $"Clicking monolith label to start wave {_state.CurrentWave + 1} ({elapsed:F1}s elapsed)";
                 return;
             }
 
             // Try 2: Click entity directly using bounds-based randomization
             if (BotInput.ClickEntity(gc, monolith))
             {
-                _lastActionTime = DateTime.Now;
-                _waveStartAttempts++;
-                StatusText = $"Clicking monolith to start wave {_state.CurrentWave + 1} (attempt {_waveStartAttempts})";
+                _waveStartLastClickTime = DateTime.Now;
+                StatusText = $"Clicking monolith to start wave {_state.CurrentWave + 1} ({elapsed:F1}s elapsed)";
             }
             else
             {
-                StatusText = $"Monolith off screen or gate blocked — waiting";
+                StatusText = $"Monolith off screen or gate blocked — waiting ({elapsed:F1}s elapsed)";
             }
         }
 
