@@ -62,7 +62,6 @@ namespace AutoExile.Modes
 
         // Post-click spawn grace — hold near monolith after clicking it to let monsters spawn
         private DateTime _waveSpawnWaitUntil = DateTime.MinValue;
-        private const float WaveSpawnGraceSeconds = 5f;
 
         // Combat stuck detection — if fighting same monsters too long, move on
         private DateTime _combatEngageTime = DateTime.MinValue;
@@ -76,6 +75,18 @@ namespace AutoExile.Modes
 
         // Action cooldown
         private const float MajorActionCooldownMs = 500f;
+
+        // Randomisation — cached per-wave delay so each wave gets a different wait
+        private static readonly Random _rng = new();
+        private static float RandRange(float min, float max) =>
+            min + (float)(_rng.NextDouble() * (max - min));
+        private float _currentWaveDelay;
+
+        // Overlay — set ShowOverlay = false to hide the on-screen HUD entirely.
+        // Change OverlayX / OverlayY to reposition it on your screen.
+        private const bool ShowOverlay = true;
+        private const float OverlayX = 20f;
+        private const float OverlayY = 100f;
 
         // Public for ImGui display
         public SimulacrumState State => _state;
@@ -99,6 +110,9 @@ namespace AutoExile.Modes
         public void OnEnter(BotContext ctx)
         {
             _settings = ctx.Settings.Simulacrum;
+            _currentWaveDelay = RandRange(
+                _settings.MinWaveDelaySeconds.Value,
+                _settings.MinWaveDelaySeconds.Value + 1.5f);
             _mapCompleted = false;
             _lastAreaName = "";
             _isStashing = false;
@@ -183,7 +197,7 @@ namespace AutoExile.Modes
             bool inMapForDebug = gc.Area?.CurrentArea != null &&
                                  !gc.Area.CurrentArea.IsHideout &&
                                  !gc.Area.CurrentArea.IsTown;
-            if (inMapForDebug && (DateTime.Now - _lastStateDebugLog).TotalSeconds >= 1.0)
+            if (inMapForDebug && (DateTime.Now - _lastStateDebugLog).TotalSeconds >= 5.0)
             {
                 _lastStateDebugLog = DateTime.Now;
                 Entity? mono = null;
@@ -209,7 +223,7 @@ namespace AutoExile.Modes
                          !gc.Area.CurrentArea.IsTown;
             if (inMap)
             {
-                _state.Tick(gc, _settings.MinWaveDelaySeconds.Value);
+                _state.Tick(gc, _currentWaveDelay);
 
                 // Disable combat during LootSweep/ExitMap — we need to navigate freely
                 // to pick up remaining items and reach the portal without being dragged into fights
@@ -377,6 +391,11 @@ namespace AutoExile.Modes
                 _state.DeathCount = deathCount;
                 _phase = SimPhase.FindMonolith;
                 _phaseStartTime = DateTime.Now;
+
+                // Compute a fresh random wave delay for this map entry.
+                _currentWaveDelay = RandRange(
+                    _settings.MinWaveDelaySeconds.Value,
+                    _settings.MinWaveDelaySeconds.Value + 1.5f);
 
                 // Reset all per-wave fields so stale timers from a previous run don't
                 // immediately trigger timeouts on the first WaveCycle tick.
@@ -554,6 +573,10 @@ namespace AutoExile.Modes
             if (_state.WavesCompleted != _lastKnownWavesCompleted)
             {
                 _lastKnownWavesCompleted = _state.WavesCompleted;
+                // Re-randomize the inter-wave delay for this new wave
+                _currentWaveDelay = RandRange(
+                    _settings.MinWaveDelaySeconds.Value,
+                    _settings.MinWaveDelaySeconds.Value + 1.5f);
                 ctx.Exploration.SeenRadiusOverride = 0; // restore normal radius for new wave
                 ctx.Exploration.ResetSeen();
                 ctx.Loot.ClearFailed(); // items that failed in earlier waves may be pickable now
@@ -730,7 +753,7 @@ namespace AutoExile.Modes
                 if (hasLoot || pickingUp)
                 {
                     if (hasLoot)
-                        _state.ResetWaveDelay(_settings.MinWaveDelaySeconds.Value);
+                        _state.ResetWaveDelay(_currentWaveDelay);
 
                     if (hasLoot && !ctx.Interaction.IsBusy)
                     {
@@ -758,7 +781,7 @@ namespace AutoExile.Modes
                     if (distToMonolith > 30f)
                     {
                         IdleNearMonolith(ctx);
-                        _state.ResetWaveDelay(_settings.MinWaveDelaySeconds.Value);
+                        _state.ResetWaveDelay(_currentWaveDelay);
                         Decision = "Between waves — returning to monolith before wave start";
                         StatusText = "Returning to monolith to check for remaining loot";
                         return;
@@ -784,7 +807,7 @@ namespace AutoExile.Modes
             // Priority 7: Start next wave (loot is clear AND delay has passed)
             if (_state.CanStartWaveAt == DateTime.MinValue)
             {
-                _state.ResetWaveDelay(_settings.MinWaveDelaySeconds.Value);
+                _state.ResetWaveDelay(_currentWaveDelay);
             }
 
             // Track how long we've been between waves — bail if stuck too long
@@ -1022,7 +1045,7 @@ namespace AutoExile.Modes
             if (TryClickEntityLabel(gc, monolith))
             {
                 _waveStartLastClickTime = DateTime.Now;
-                _waveSpawnWaitUntil = DateTime.Now.AddSeconds(WaveSpawnGraceSeconds);
+                _waveSpawnWaitUntil = DateTime.Now.AddSeconds(RandRange(3.5f, 5.5f));
                 StatusText = $"Clicking monolith label to start wave {_state.WavesCompleted + 1} ({elapsed:F1}s elapsed)";
                 return;
             }
@@ -1031,7 +1054,7 @@ namespace AutoExile.Modes
             if (BotInput.ClickEntity(gc, monolith))
             {
                 _waveStartLastClickTime = DateTime.Now;
-                _waveSpawnWaitUntil = DateTime.Now.AddSeconds(WaveSpawnGraceSeconds);
+                _waveSpawnWaitUntil = DateTime.Now.AddSeconds(RandRange(3.5f, 5.5f));
                 StatusText = $"Clicking monolith to start wave {_state.WavesCompleted + 1} ({elapsed:F1}s elapsed)";
             }
             else
@@ -1355,13 +1378,14 @@ namespace AutoExile.Modes
 
         public void Render(BotContext ctx)
         {
+            if (!ShowOverlay) return;
             if (ctx.Graphics == null) return;
             var gc = ctx.Game;
             var cam = gc.IngameState.Camera;
             var g = ctx.Graphics;
 
-            var hudY = 100f;
-            var hudX = 20f;
+            var hudY = OverlayY;
+            var hudX = OverlayX;
             var lineH = 16f;
 
             g.DrawText($"Phase: {_phase}", new Vector2(hudX, hudY), SharpDX.Color.White);
