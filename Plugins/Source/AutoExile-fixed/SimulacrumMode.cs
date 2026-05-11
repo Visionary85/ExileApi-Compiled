@@ -334,6 +334,19 @@ namespace AutoExile.Modes
                 _phase = SimPhase.FindMonolith;
                 _phaseStartTime = DateTime.Now;
 
+                // Reset per-wave tracking so stale timers from a previous run don't
+                // immediately trigger the BetweenWaveTimeout on the first WaveCycle tick.
+                // These are only initialized in OnEnter (once per mode activation) but must
+                // also be reset here since OnEnter is not called on subsequent area changes.
+                _betweenWaveStartTime = DateTime.MinValue;
+                _waveStartFirstTryTime = DateTime.MinValue;
+                _waveStartLastClickTime = DateTime.MinValue;
+                _lastKnownWave = 0;
+                _wasSearching = false;
+                _combatEngageTime = DateTime.MinValue;
+                _combatEngageCount = 0;
+                _blacklistedMonsters.Clear();
+
                 // Force-reinitialize exploration for this new instance
                 var pfGrid = gc.IngameState?.Data?.RawPathfindingData;
                 var tgtGrid = gc.IngameState?.Data?.RawTerrainTargetingData;
