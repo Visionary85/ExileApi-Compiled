@@ -81,7 +81,20 @@ namespace AutoExile.Modes
         public SimulacrumState State => _state;
         public SimPhase Phase => _phase;
         public string StatusText { get; private set; } = "";
-        public string Decision { get; private set; } = "";
+        public string Decision
+        {
+            get => _decision;
+            private set
+            {
+                if (value == _decision) return;
+                _decision = value;
+                _pendingDecisionLog = value;
+            }
+        }
+        private string _decision = "";
+        private string? _pendingDecisionLog;
+        private SimPhase _lastLoggedPhase = (SimPhase)(-1);
+        private DateTime _lastStateDebugLog = DateTime.MinValue;
 
         public void OnEnter(BotContext ctx)
         {
@@ -154,6 +167,40 @@ namespace AutoExile.Modes
             {
                 OnAreaChanged(ctx, currentArea);
                 _lastAreaName = currentArea;
+            }
+
+            // Diagnostic: log phase transitions, decision changes, and periodic monolith state
+            if (_phase != _lastLoggedPhase)
+            {
+                ctx.Log($"[Sim] Phase {_lastLoggedPhase} -> {_phase} | Wave={_state.WavesCompleted}/{SimulacrumState.MaxWavesInEncounter} Active={_state.IsWaveActive} Complete={_state.IsEncounterComplete} | Status={StatusText}");
+                _lastLoggedPhase = _phase;
+            }
+            if (_pendingDecisionLog != null)
+            {
+                ctx.Log($"[Sim] Decision: {_pendingDecisionLog}");
+                _pendingDecisionLog = null;
+            }
+            bool inMapForDebug = gc.Area?.CurrentArea != null &&
+                                 !gc.Area.CurrentArea.IsHideout &&
+                                 !gc.Area.CurrentArea.IsTown;
+            if (inMapForDebug && (DateTime.Now - _lastStateDebugLog).TotalSeconds >= 1.0)
+            {
+                _lastStateDebugLog = DateTime.Now;
+                Entity? mono = null;
+                if (_state.MonolithId.HasValue)
+                    mono = gc.EntityListWrapper.OnlyValidEntities.FirstOrDefault(e => e.Id == _state.MonolithId.Value);
+                if (mono == null)
+                    mono = gc.EntityListWrapper.OnlyValidEntities.FirstOrDefault(e => e.Metadata?.Contains("Objects/Afflictionator") == true);
+                string stateStr = "(no monolith)";
+                if (mono != null && mono.TryGetComponent<StateMachine>(out var sm))
+                {
+                    var act = sm.States.FirstOrDefault(s => s.Name == "active")?.Value ?? -1;
+                    var wv  = sm.States.FirstOrDefault(s => s.Name == "wave")?.Value ?? -1;
+                    var gb  = sm.States.FirstOrDefault(s => s.Name == "goodbye")?.Value ?? -1;
+                    var all = string.Join(",", sm.States.Select(s => $"{s.Name}={s.Value}"));
+                    stateStr = $"active={act} wave={wv} goodbye={gb} all=[{all}]";
+                }
+                ctx.Log($"[SimDebug] Phase={_phase} WavesCompleted={_state.WavesCompleted} IsWaveActive={_state.IsWaveActive} EncounterComplete={_state.IsEncounterComplete} CanStartIn={(_state.CanStartWaveAt - DateTime.Now).TotalSeconds:F1}s Monolith={stateStr}");
             }
 
             // Always tick state when in map; combat only during active phases
