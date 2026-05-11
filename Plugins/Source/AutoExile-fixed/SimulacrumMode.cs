@@ -791,10 +791,13 @@ namespace AutoExile.Modes
                 }
             }
 
-            // Priority 6: Wave 15 complete — sweep remaining loot and exit
-            if (_state.CurrentWave >= 15 && !_state.IsWaveActive)
+            // Priority 6: Encounter complete (goodbye flag set) — sweep remaining loot and exit.
+            // We use the goodbye StateMachine state instead of CurrentWave >= 15 because
+            // the Mirage server initializes wave to 15 on map entry, causing a false positive
+            // that triggered LootSweep before any wave was ever started.
+            if (_state.IsEncounterComplete && !_state.IsWaveActive)
             {
-                Decision = "Wave 15 complete → LootSweep";
+                Decision = "Encounter complete → LootSweep";
                 _phase = SimPhase.LootSweep;
                 _phaseStartTime = DateTime.Now;
                 _sweepNearMonolith = false;
@@ -838,7 +841,7 @@ namespace AutoExile.Modes
                 return;
             }
 
-            if (DateTime.Now >= _state.CanStartWaveAt && _state.CurrentWave < 15)
+            if (DateTime.Now >= _state.CanStartWaveAt && !_state.IsEncounterComplete)
             {
                 var elapsed = _waveStartFirstTryTime == DateTime.MinValue ? 0.0 : (DateTime.Now - _waveStartFirstTryTime).TotalSeconds;
                 Decision = $"Wave {_state.CurrentWave}/15 → StartWave ({elapsed:F1}s / {WaveStartTimeoutSeconds}s)";
