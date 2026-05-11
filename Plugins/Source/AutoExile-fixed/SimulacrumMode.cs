@@ -60,6 +60,10 @@ namespace AutoExile.Modes
         private DateTime _betweenWaveStartTime = DateTime.MinValue;
         private const float BetweenWaveTimeoutSeconds = 120f;
 
+        // Post-click spawn grace — hold near monolith after clicking it to let monsters spawn
+        private DateTime _waveSpawnWaitUntil = DateTime.MinValue;
+        private const float WaveSpawnGraceSeconds = 5f;
+
         // Combat stuck detection — if fighting same monsters too long, move on
         private DateTime _combatEngageTime = DateTime.MinValue;
         private int _combatEngageCount;
@@ -341,6 +345,7 @@ namespace AutoExile.Modes
                 _betweenWaveStartTime = DateTime.MinValue;
                 _waveStartFirstTryTime = DateTime.MinValue;
                 _waveStartLastClickTime = DateTime.MinValue;
+                _waveSpawnWaitUntil = DateTime.MinValue;
                 _lastKnownWave = 0;
                 _wasSearching = false;
                 _combatEngageTime = DateTime.MinValue;
@@ -592,6 +597,18 @@ namespace AutoExile.Modes
             // --- Priority 3: Wave active — fight and explore ---
             if (_state.IsWaveActive)
             {
+                // After clicking the monolith, pause near it to let monsters fully spawn.
+                // Without this, the bot immediately starts exploring an empty arena and may
+                // wander away before the first monsters appear.
+                if (DateTime.Now < _waveSpawnWaitUntil)
+                {
+                    IdleNearMonolith(ctx);
+                    var spawnWait = (_waveSpawnWaitUntil - DateTime.Now).TotalSeconds;
+                    Decision = $"Wave {_state.CurrentWave} — waiting for spawn ({spawnWait:F1}s)";
+                    StatusText = $"Wave {_state.CurrentWave}/15 — waiting for monsters to spawn...";
+                    return;
+                }
+
                 // NearbyMonsterCount = within CombatRange — monsters close enough to fight
                 if (ctx.Combat.NearbyMonsterCount > 0)
                 {
@@ -1061,6 +1078,7 @@ namespace AutoExile.Modes
             if (TryClickEntityLabel(gc, monolith))
             {
                 _waveStartLastClickTime = DateTime.Now;
+                _waveSpawnWaitUntil = DateTime.Now.AddSeconds(WaveSpawnGraceSeconds);
                 StatusText = $"Clicking monolith label to start wave {_state.CurrentWave + 1} ({elapsed:F1}s elapsed)";
                 return;
             }
@@ -1069,6 +1087,7 @@ namespace AutoExile.Modes
             if (BotInput.ClickEntity(gc, monolith))
             {
                 _waveStartLastClickTime = DateTime.Now;
+                _waveSpawnWaitUntil = DateTime.Now.AddSeconds(WaveSpawnGraceSeconds);
                 StatusText = $"Clicking monolith to start wave {_state.CurrentWave + 1} ({elapsed:F1}s elapsed)";
             }
             else
