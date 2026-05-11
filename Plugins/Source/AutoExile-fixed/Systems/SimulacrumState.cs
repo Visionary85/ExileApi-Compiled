@@ -26,8 +26,30 @@ namespace AutoExile.Systems
         public Vector2? StashPosition { get; private set; }
 
         // Wave state — read from monolith's StateMachine component
+        // IsWaveActive: true when the 'active' state > 0 (goodbye is deliberately ignored —
+        // the Mirage server initializes goodbye to a non-zero value before any wave starts,
+        // which would make the original `active > 0 && goodbye == 0` formula always false).
         public bool IsWaveActive { get; private set; }
+
+        // IsEncounterComplete: tracked internally by counting active→inactive transitions.
+        // We do NOT use the 'goodbye' or 'wave' StateMachine values for this because both
+        // are initialized to unexpected values on fresh entry in Mirage league (wave = 15,
+        // goodbye may be > 0) that do not reflect actual encounter progress.
         public bool IsEncounterComplete { get; private set; }
+
+        // WavesCompleted: number of waves that have actually been fought and won.
+        // Incremented each time IsWaveActive transitions true → false after ≥ MinWaveActiveSeconds.
+        public int WavesCompleted { get; private set; }
+        public const int MaxWavesInEncounter = 15;
+
+        // Minimum seconds a wave must be active to count as a real wave (guards against
+        // brief flickers of the active state on monolith click registration).
+        private const float MinWaveActiveSeconds = 2f;
+
+        // Internal tracking for wave completion counting
+        private bool _prevIsWaveActive;
+        private DateTime _waveActiveStartedAt = DateTime.MinValue;
+
         public int CurrentWave { get; private set; }
         public DateTime WaveStartedAt { get; private set; } = DateTime.Now;
         public DateTime CanStartWaveAt { get; private set; } = DateTime.MinValue;
@@ -72,6 +94,9 @@ namespace AutoExile.Systems
             StashPosition = null;
             IsWaveActive = false;
             IsEncounterComplete = false;
+            WavesCompleted = 0;
+            _prevIsWaveActive = false;
+            _waveActiveStartedAt = DateTime.MinValue;
             CurrentWave = 0;
             WaveStartedAt = DateTime.Now;
             CanStartWaveAt = DateTime.MinValue;
@@ -94,6 +119,9 @@ namespace AutoExile.Systems
             StashPosition = null;
             IsWaveActive = false;
             IsEncounterComplete = false;
+            WavesCompleted = 0;
+            _prevIsWaveActive = false;
+            _waveActiveStartedAt = DateTime.MinValue;
             CurrentWave = 0;
             CanStartWaveAt = DateTime.MinValue;
             _lastMonolithUpdate = DateTime.MinValue;
@@ -174,16 +202,18 @@ namespace AutoExile.Systems
 
                 if (monolith.TryGetComponent<StateMachine>(out var state))
                 {
-                    var goodbyeVal = state.States.FirstOrDefault(s => s.Name == "goodbye")?.Value ?? 0;
-                    var isActive = state.States.FirstOrDefault(s => s.Name == "active")?.Value > 0 &&
-                                   goodbyeVal == 0;
+                    // Use only the 'active' state for wave detection.
+                    // The 'goodbye' state is intentionally excluded: in Mirage league it is
+                    // initialized to a non-zero value before any wave starts, which makes the
+                    // original formula (active > 0 && goodbye == 0) always false.
+                    var isActive = state.States.FirstOrDefault(s => s.Name == "active")?.Value > 0;
                     var wave = (int)(state.States.FirstOrDefault(s => s.Name == "wave")?.Value ?? 0);
 
                     // Wave just ended — enforce delay before next start
                     if (IsWaveActive && !isActive)
                         CanStartWaveAt = DateTime.Now.AddSeconds(minWaveDelay);
 
-                    // Wave number changed
+                    // Wave number changed (informational — used for stats and exploration resets)
                     if (wave != CurrentWave)
                     {
                         WaveStartedAt = DateTime.Now;
@@ -191,8 +221,26 @@ namespace AutoExile.Systems
                             HighestWaveThisRun = wave;
                     }
 
+                    // Count wave completions internally via active state transitions.
+                    // IsEncounterComplete is set once we reach MaxWavesInEncounter completions.
+                    if (!_prevIsWaveActive && isActive)
+                    {
+                        _waveActiveStartedAt = DateTime.Now;
+                    }
+                    else if (_prevIsWaveActive && !isActive)
+                    {
+                        var waveDuration = (DateTime.Now - _waveActiveStartedAt).TotalSeconds;
+                        if (waveDuration >= MinWaveActiveSeconds)
+                        {
+                            WavesCompleted++;
+                            if (WavesCompleted > HighestWaveThisRun)
+                                HighestWaveThisRun = WavesCompleted;
+                        }
+                    }
+                    _prevIsWaveActive = isActive;
+
                     IsWaveActive = isActive;
-                    IsEncounterComplete = goodbyeVal > 0;
+                    IsEncounterComplete = WavesCompleted >= MaxWavesInEncounter;
                     CurrentWave = wave;
                     _lastMonolithUpdate = DateTime.Now;
                 }
