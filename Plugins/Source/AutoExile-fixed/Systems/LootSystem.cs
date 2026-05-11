@@ -176,6 +176,12 @@ namespace AutoExile.Systems
                         continue;
 
                     var worldItemEntity = label.ItemOnGround;
+
+                    // Skip non-item entities (portals, stash chests, NPCs, transitions, etc.)
+                    // Only EntityType.WorldItem entities are actual pickupable ground items.
+                    if (worldItemEntity.Type != EntityType.WorldItem)
+                        continue;
+
                     if (_failedEntities.TryGetValue(worldItemEntity.Id, out var failEntry) && !failEntry.IsExpired)
                     {
                         LogSkipEvent(worldItemEntity.Id, label.Label.Text ?? "?",
