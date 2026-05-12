@@ -81,7 +81,9 @@ namespace AutoExile.Modes
         // Action cooldown
         private const float MajorActionCooldownMs = 500f;
 
-        // Randomisation — cached per-wave delay so each wave gets a different wait
+        // Final-wave fallback timer — if wave 15 active state never transitions to 0
+        // (known Mirage league behaviour), we exit after 10s with zero cached monsters.
+        private DateTime _finalWaveNoMonstersAt = DateTime.MinValue;
         private static readonly Random _rng = new();
         private static float RandRange(float min, float max) =>
             min + (float)(_rng.NextDouble() * (max - min));
@@ -135,6 +137,7 @@ namespace AutoExile.Modes
             _combatEngageCount = 0;
             _blacklistedMonsters.Clear();
             _lastShrineScan = DateTime.MinValue;
+            _finalWaveNoMonstersAt = DateTime.MinValue;
 
             // Enable combat
             ModeHelpers.EnableDefaultCombat(ctx);
@@ -415,6 +418,7 @@ namespace AutoExile.Modes
                 _combatEngageCount = 0;
                 _blacklistedMonsters.Clear();
                 _lastShrineScan = DateTime.MinValue;
+                _finalWaveNoMonstersAt = DateTime.MinValue;
 
                 // Force-reinitialize exploration for this new instance
                 var pfGrid = gc.IngameState?.Data?.RawPathfindingData;
@@ -584,6 +588,7 @@ namespace AutoExile.Modes
                 _currentWaveDelay = RandRange(
                     _settings.MinWaveDelaySeconds.Value,
                     _settings.MinWaveDelaySeconds.Value + 1.5f);
+                _finalWaveNoMonstersAt = DateTime.MinValue;
                 ctx.Exploration.SeenRadiusOverride = 0; // restore normal radius for new wave
                 ctx.Exploration.ResetSeen();
                 ctx.Loot.ClearFailed(); // items that failed in earlier waves may be pickable now
@@ -653,6 +658,38 @@ namespace AutoExile.Modes
                 _lastEmptyScanAt = DateTime.MinValue;
                 StatusText = $"Wave {_state.WavesCompleted + 1} timed out — sweeping loot before exit";
                 return;
+            }
+
+            // --- Priority 3b: Final-wave fallback ---
+            // In Mirage league the monolith 'active' state can stay 1 after wave 15 ends,
+            // so WavesCompleted never reaches 15 via the normal active→inactive transition.
+            // If we're on the last wave and see zero cached monsters for 10 consecutive
+            // seconds we treat the encounter as complete and move to LootSweep.
+            if (_state.IsWaveActive &&
+                _state.WavesCompleted == SimulacrumState.MaxWavesInEncounter - 1 &&
+                ctx.Combat.CachedMonsterCount == 0 &&
+                ctx.Combat.NearbyMonsterCount == 0)
+            {
+                if (_finalWaveNoMonstersAt == DateTime.MinValue)
+                    _finalWaveNoMonstersAt = DateTime.Now;
+
+                var noMonsterSecs = (DateTime.Now - _finalWaveNoMonstersAt).TotalSeconds;
+                if (noMonsterSecs >= 10.0)
+                {
+                    Decision = "Wave 15: no monsters for 10s → LootSweep";
+                    _phase = SimPhase.LootSweep;
+                    _phaseStartTime = DateTime.Now;
+                    _sweepNearMonolith = false;
+                    _lastEmptyScanAt = DateTime.MinValue;
+                    StatusText = "Wave 15 complete — sweeping loot";
+                    return;
+                }
+                // Keep exploring while the timer runs
+                StatusText = $"Wave 15 — confirming clear ({noMonsterSecs:F0}s / 10s)";
+            }
+            else
+            {
+                _finalWaveNoMonstersAt = DateTime.MinValue;
             }
 
             // --- Priority 4: Wave active — fight and explore ---
