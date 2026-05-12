@@ -73,11 +73,6 @@ namespace AutoExile.Modes
         private const float MonsterBlacklistSeconds = 10f;
 
 
-        // Shrine clicking — opportunistic, no navigation, only within close range
-        private DateTime _lastShrineScan = DateTime.MinValue;
-        private const float ShrineScanIntervalMs = 1000f;
-        private const float ShrineClickRadius = 30f;
-
         // Action cooldown
         private const float MajorActionCooldownMs = 500f;
 
@@ -136,7 +131,7 @@ namespace AutoExile.Modes
             _combatEngageTime = DateTime.MinValue;
             _combatEngageCount = 0;
             _blacklistedMonsters.Clear();
-            _lastShrineScan = DateTime.MinValue;
+
             _finalWaveNoMonstersAt = DateTime.MinValue;
 
             // Enable combat
@@ -417,7 +412,7 @@ namespace AutoExile.Modes
                 _combatEngageTime = DateTime.MinValue;
                 _combatEngageCount = 0;
                 _blacklistedMonsters.Clear();
-                _lastShrineScan = DateTime.MinValue;
+    
                 _finalWaveNoMonstersAt = DateTime.MinValue;
 
                 // Force-reinitialize exploration for this new instance
@@ -607,25 +602,7 @@ namespace AutoExile.Modes
                 return;
             }
 
-            // --- Priority 1: Click nearby shrine opportunistically (no navigation) ---
-            // Fires during both active waves and between-wave periods.
-            // Never navigates — only clicks shrines already within close range so it
-            // doesn't pull the bot away from combat or break loot routing.
-            if (!ctx.Interaction.IsBusy &&
-                (DateTime.Now - _lastShrineScan).TotalMilliseconds >= ShrineScanIntervalMs)
-            {
-                _lastShrineScan = DateTime.Now;
-                var shrine = FindNearbyShrine(gc, playerPos, ShrineClickRadius);
-                if (shrine != null)
-                {
-                    ctx.Interaction.InteractWithEntity(shrine, requireProximity: false);
-                    Decision = $"Clicking shrine ({shrine.RenderName ?? "Shrine"})";
-                    StatusText = $"Clicking shrine";
-                    return;
-                }
-            }
-
-            // --- Priority 2: Pick up nearby loot (during active waves only) ---
+            // --- Priority 1: Pick up nearby loot (during active waves only) ---
             if (_state.IsWaveActive)
             {
                 if ((DateTime.Now - _lastLootScan).TotalMilliseconds >= LootScanIntervalMs)
@@ -647,7 +624,7 @@ namespace AutoExile.Modes
                 }
             }
 
-            // --- Priority 3: Wave timeout check ---
+            // --- Priority 2: Wave timeout check ---
             if (_state.IsWaveActive &&
                 (DateTime.Now - _state.WaveStartedAt).TotalMinutes > _settings.WaveTimeoutMinutes.Value)
             {
@@ -660,7 +637,7 @@ namespace AutoExile.Modes
                 return;
             }
 
-            // --- Priority 3b: Final-wave fallback ---
+            // --- Priority 2b: Final-wave fallback ---
             // In Mirage league the monolith 'active' state can stay 1 after wave 15 ends,
             // so WavesCompleted never reaches 15 via the normal active→inactive transition.
             // If we're on the last wave and see zero cached monsters for 10 consecutive
@@ -692,7 +669,7 @@ namespace AutoExile.Modes
                 _finalWaveNoMonstersAt = DateTime.MinValue;
             }
 
-            // --- Priority 4: Wave active — fight and explore ---
+            // --- Priority 3: Wave active — fight and explore ---
             if (_state.IsWaveActive)
             {
                 // After clicking the monolith, pause near it to let monsters fully spawn.
@@ -779,7 +756,7 @@ namespace AutoExile.Modes
 
             // --- Between waves ---
 
-            // Priority 5: Stash items if inventory above threshold.
+            // Priority 4: Stash items if inventory above threshold.
             if (!_state.IsWaveActive && _state.StashPosition.HasValue && !ctx.Interaction.IsBusy)
             {
                 int stashableCount = 0;
@@ -803,7 +780,7 @@ namespace AutoExile.Modes
                 _isStashing = false;
             }
 
-            // Priority 6: Loot must be fully cleared before starting next wave.
+            // Priority 5: Loot must be fully cleared before starting next wave.
             if (!_state.IsWaveActive)
             {
                 ctx.Loot.Scan(gc);
@@ -851,7 +828,7 @@ namespace AutoExile.Modes
                 }
             }
 
-            // Priority 7: All waves complete — sweep remaining loot and exit.
+            // Priority 6: All waves complete — sweep remaining loot and exit.
             // IsEncounterComplete is set by SimulacrumState once WavesCompleted >= MaxWavesInEncounter.
             // We track this internally (counting active→inactive transitions) rather than using the
             // 'wave' or 'goodbye' StateMachine values which are unreliable in Mirage league.
@@ -866,7 +843,7 @@ namespace AutoExile.Modes
                 return;
             }
 
-            // Priority 8: Start next wave (loot is clear AND delay has passed)
+            // Priority 7: Start next wave (loot is clear AND delay has passed)
             if (_state.CanStartWaveAt == DateTime.MinValue)
             {
                 _state.ResetWaveDelay(_currentWaveDelay);
@@ -912,27 +889,6 @@ namespace AutoExile.Modes
             Decision = $"Loot clear — waiting ({waitRemaining:F1}s)";
             IdleNearMonolith(ctx);
             StatusText = $"Wave {_state.WavesCompleted}/{SimulacrumState.MaxWavesInEncounter} done — {waitRemaining:F1}s until next wave";
-        }
-
-        /// <summary>
-        /// Returns the nearest available shrine within maxDist grid units, or null.
-        /// </summary>
-        private static Entity? FindNearbyShrine(GameController gc, Vector2 playerGrid, float maxDist)
-        {
-            float nearestDist = maxDist;
-            Entity? nearest = null;
-            foreach (var entity in gc.EntityListWrapper.OnlyValidEntities)
-            {
-                if (!entity.HasComponent<Shrine>()) continue;
-                if (!entity.GetComponent<Shrine>().IsAvailable) continue;
-                var dist = Vector2.Distance(entity.GridPosNum, playerGrid);
-                if (dist < nearestDist)
-                {
-                    nearestDist = dist;
-                    nearest = entity;
-                }
-            }
-            return nearest;
         }
 
         /// <summary>
