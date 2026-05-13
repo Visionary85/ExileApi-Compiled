@@ -237,6 +237,11 @@ namespace AutoExile.Modes
                     // Suppress cursor-moving skills when interaction is busy picking up loot
                     ctx.Combat.SuppressPositioning = ctx.Interaction.IsBusy;
                     ctx.Combat.SuppressTargetedSkills = ctx.Interaction.IsBusy;
+                    // If a channeling skill (e.g. Cyclone) is held while skills are suppressed,
+                    // refresh the held-key watchdog every tick so the 5s timeout doesn't release
+                    // the key mid-channel. The combat system can't re-press it while suppressed.
+                    if (ctx.Interaction.IsBusy && BotInput.HasHeldKeys)
+                        BotInput.RefreshHeldKeys();
                     ctx.Combat.Tick(ctx);
                 }
             }
