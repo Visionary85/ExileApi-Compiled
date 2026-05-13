@@ -66,7 +66,8 @@ namespace AutoExile.Modes
         // Combat stuck detection — if fighting same monsters too long, move on
         private DateTime _combatEngageTime = DateTime.MinValue;
         private int _combatEngageCount;
-        private const float CombatStuckSeconds = 15f;
+        private int _combatEngageMaxTotal;
+        private const float CombatStuckSeconds = 30f;
 
         // Monster blacklist — temporarily ignore monsters we can't kill so we reposition via explore
         private readonly Dictionary<long, DateTime> _blacklistedMonsters = new();
@@ -130,6 +131,7 @@ namespace AutoExile.Modes
 
             _combatEngageTime = DateTime.MinValue;
             _combatEngageCount = 0;
+            _combatEngageMaxTotal = 0;
             _blacklistedMonsters.Clear();
 
             _finalWaveNoMonstersAt = DateTime.MinValue;
@@ -411,6 +413,7 @@ namespace AutoExile.Modes
                 _wasSearching = false;
                 _combatEngageTime = DateTime.MinValue;
                 _combatEngageCount = 0;
+                _combatEngageMaxTotal = 0;
                 _blacklistedMonsters.Clear();
     
                 _finalWaveNoMonstersAt = DateTime.MinValue;
@@ -684,10 +687,26 @@ namespace AutoExile.Modes
 
                 if (ctx.Combat.NearbyMonsterCount > 0)
                 {
-                    if (_combatEngageTime == DateTime.MinValue || ctx.Combat.NearbyMonsterCount < _combatEngageCount)
+                    int currentTotal = ctx.Combat.CachedMonsterCount;
+                    if (_combatEngageTime == DateTime.MinValue)
                     {
                         _combatEngageTime = DateTime.Now;
                         _combatEngageCount = ctx.Combat.NearbyMonsterCount;
+                        _combatEngageMaxTotal = currentTotal;
+                    }
+                    else
+                    {
+                        if (currentTotal > _combatEngageMaxTotal)
+                            _combatEngageMaxTotal = currentTotal;
+                        // Reset timer when kills are happening (total dropped below peak)
+                        // or nearby count fell below initial engage count.
+                        if (currentTotal < _combatEngageMaxTotal ||
+                            ctx.Combat.NearbyMonsterCount < _combatEngageCount)
+                        {
+                            _combatEngageTime = DateTime.Now;
+                            _combatEngageCount = ctx.Combat.NearbyMonsterCount;
+                            _combatEngageMaxTotal = currentTotal;
+                        }
                     }
 
                     var combatElapsed = (DateTime.Now - _combatEngageTime).TotalSeconds;
@@ -695,6 +714,7 @@ namespace AutoExile.Modes
                     {
                         _combatEngageTime = DateTime.MinValue;
                         _combatEngageCount = 0;
+                        _combatEngageMaxTotal = 0;
                         BlacklistNearbyMonsters(gc, gc.Player.GridPosNum, ctx.Settings.Build.CombatRange.Value);
                         ctx.Navigation.Stop(gc);
                         if (!_wasSearching)
@@ -747,6 +767,7 @@ namespace AutoExile.Modes
                     }
                     _combatEngageTime = DateTime.MinValue;
                     _combatEngageCount = 0;
+                    _combatEngageMaxTotal = 0;
 
                     Decision = $"Wave {_state.WavesCompleted + 1} — patrolling ({ctx.Combat.CachedMonsterCount} distant)";
                     TickExploreForMonsters(ctx);
