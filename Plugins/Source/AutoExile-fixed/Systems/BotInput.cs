@@ -1256,7 +1256,7 @@ namespace AutoExile.Systems
             if (TryCaptureReplay("PressKey", key: key)) return true;
             if (!CanAct) { LogAction("PressKey", null, key, false); return false; }
             SuspendMovement();
-            ReleaseAllKeys();
+            ReleaseAllModifiersBeforeMove(); // preserve channel skill keys
             var hold = RandHold();
             NextActionAt = DateTime.Now.AddMilliseconds(hold + ActionCooldownMs);
             _ = DoPressKey(key, hold);
@@ -1303,7 +1303,7 @@ namespace AutoExile.Systems
             if (!CanAct) { LogAction("Click", absPos, null, false); return false; }
             if (!ClampToWindow(ref absPos)) { LogAction("Click", absPos, null, false); return false; }
             SuspendMovement();
-            ReleaseAllKeys();
+            ReleaseAllModifiersBeforeMove(); // preserve channel skill keys (e.g. Cyclone)
             var moveMs = EstimateMoveMs(absPos);
             var settle = RandSettle();
             var hold = RandHold();
@@ -1320,7 +1320,7 @@ namespace AutoExile.Systems
             if (!CanAct) return false;
             if (!ClampToWindow(ref absPos)) return false;
             SuspendMovement();
-            ReleaseAllKeys();
+            ReleaseAllModifiersBeforeMove(); // preserve channel skill keys
             var moveMs = EstimateMoveMs(absPos);
             NextActionAt = DateTime.Now.AddMilliseconds(moveMs + ActionCooldownMs);
             _ = MoveCursorTo(absPos);
@@ -1334,7 +1334,7 @@ namespace AutoExile.Systems
             if (!CanAct) { LogAction("RightClick", absPos, null, false); return false; }
             if (!ClampToWindow(ref absPos)) { LogAction("RightClick", absPos, null, false); return false; }
             SuspendMovement();
-            ReleaseAllKeys();
+            ReleaseAllModifiersBeforeMove(); // preserve channel skill keys
             var moveMs = EstimateMoveMs(absPos);
             var settle = RandSettle();
             var hold = RandHold();
