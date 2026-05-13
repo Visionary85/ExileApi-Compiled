@@ -18,6 +18,14 @@ namespace AutoExile.Modes
     {
         public string Name => "Simulacrum";
 
+        // Self-register sibling modes so no BotCore.cs edits are needed.
+        // BotCore.Instance is set at the very top of Initialise(), before any
+        // mode constructors run, so this is always safe.
+        public SimulacrumMode()
+        {
+            BotCore.Instance?.RegisterMode(new LevelingMode());
+        }
+
         private SimulacrumState _state = new();
         private SimPhase _phase = SimPhase.Idle;
         private DateTime _phaseStartTime = DateTime.Now;
