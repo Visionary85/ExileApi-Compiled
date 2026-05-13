@@ -18,11 +18,6 @@ namespace AutoExile.Modes
     {
         public string Name => "Simulacrum";
 
-        public SimulacrumMode()
-        {
-            BotCore.Instance?.RegisterMode(new LevelingMode());
-        }
-
         private SimulacrumState _state = new();
         private SimPhase _phase = SimPhase.Idle;
         private DateTime _phaseStartTime = DateTime.Now;
