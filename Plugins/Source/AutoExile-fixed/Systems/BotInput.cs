@@ -1050,20 +1050,6 @@ namespace AutoExile.Systems
         }
 
         /// <summary>
-        /// Reset the watchdog timer for all currently held keys.
-        /// Call each tick while channeling should continue despite skill suppression
-        /// (e.g. Cyclone held during loot pickup — skills suppressed to avoid cursor
-        /// movement, but the held key should not time out and stop channeling).
-        /// </summary>
-        public static void RefreshHeldKeys()
-        {
-            if (_heldKeys.Count == 0) return;
-            var now = DateTime.Now;
-            foreach (var key in _heldKeys.Keys.ToList())
-                _heldKeys[key] = now;
-        }
-
-        /// <summary>
         /// Tick the held key watchdog. Call once per frame from BotCore.
         /// Auto-releases keys held longer than HeldKeyTimeoutSeconds.
         /// </summary>
