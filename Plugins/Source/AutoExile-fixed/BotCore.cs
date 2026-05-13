@@ -939,7 +939,7 @@ public class BotCore : BaseSettingsPlugin<BotSettings>
 			base.Graphics.DrawText(text4, new Vector2(100f, 116f), Color.Red);
 		}
 		RectangleF windowRectangle = base.GameController.Window.GetWindowRectangle();
-		float width = ((RectangleF)(ref windowRectangle)).Width;
+		float width = windowRectangle.Width;
 		_lootTracker.Render(base.Graphics, new Vector2(width - 250f, 80f));
 		_ctx.Graphics = base.Graphics;
 		_mode.Render(_ctx);
@@ -1910,7 +1910,7 @@ public class BotCore : BaseSettingsPlugin<BotSettings>
 				if (val2 != null && val2.IsVisible)
 				{
 					RectangleF clientRect = val2.GetClientRect();
-					BotInput.Click(new Vector2(((RectangleF)(ref windowRectangle)).X + ((RectangleF)(ref clientRect)).Center.X, ((RectangleF)(ref windowRectangle)).Y + ((RectangleF)(ref clientRect)).Center.Y));
+					BotInput.Click(new Vector2(windowRectangle.X + clientRect.Center.X, windowRectangle.Y + clientRect.Center.Y));
 					_lastGemLevelAt = DateTime.Now;
 					return;
 				}
@@ -1934,7 +1934,7 @@ public class BotCore : BaseSettingsPlugin<BotSettings>
 						continue;
 					}
 					RectangleF clientRect2 = childAtIndex.GetClientRect();
-					if (((RectangleF)(ref clientRect2)).Width > 5f && ((RectangleF)(ref clientRect2)).Width < 60f && ((RectangleF)(ref clientRect2)).Height > 5f && ((RectangleF)(ref clientRect2)).Height < 60f)
+					if (clientRect2.Width > 5f && clientRect2.Width < 60f && clientRect2.Height > 5f && clientRect2.Height < 60f)
 					{
 						num++;
 						if (num == 2)
@@ -1959,7 +1959,7 @@ public class BotCore : BaseSettingsPlugin<BotSettings>
 				{
 				}
 				RectangleF val4 = (RectangleF)val3.GetClientRect();
-				BotInput.Click(new Vector2(((RectangleF)(ref windowRectangle)).X + ((RectangleF)(ref val4)).Center.X, ((RectangleF)(ref windowRectangle)).Y + ((RectangleF)(ref val4)).Center.Y));
+				BotInput.Click(new Vector2(windowRectangle.X + val4.Center.X, windowRectangle.Y + val4.Center.Y));
 				_lastGemLevelAt = DateTime.Now;
 				break;
 			}
@@ -2031,9 +2031,9 @@ public class BotCore : BaseSettingsPlugin<BotSettings>
 						if (resurrectAtCheckpoint != null && resurrectAtCheckpoint.IsVisible)
 						{
 							RectangleF clientRect = resurrectAtCheckpoint.GetClientRect();
-							Vector2 vector = new Vector2(((RectangleF)(ref clientRect)).Center.X, ((RectangleF)(ref clientRect)).Center.Y);
+							Vector2 vector = new Vector2(clientRect.Center.X, clientRect.Center.Y);
 							RectangleF windowRectangle = gameController.Window.GetWindowRectangle();
-							BotInput.Click(new Vector2(((RectangleF)(ref windowRectangle)).X + vector.X, ((RectangleF)(ref windowRectangle)).Y + vector.Y));
+							BotInput.Click(new Vector2(windowRectangle.X + vector.X, windowRectangle.Y + vector.Y));
 							_lastReviveClickAt = DateTime.Now;
 						}
 					}
@@ -2056,10 +2056,10 @@ public class BotCore : BaseSettingsPlugin<BotSettings>
 				if (childAtIndex != null && childAtIndex.IsVisible)
 				{
 					RectangleF clientRect2 = childAtIndex.GetClientRect();
-					if (((RectangleF)(ref clientRect2)).Width > 5f)
+					if (clientRect2.Width > 5f)
 					{
 						RectangleF getWindowRectangleTimeCache = gameController.Window.GetWindowRectangleTimeCache;
-						BotInput.Click(new Vector2(((RectangleF)(ref clientRect2)).X + ((RectangleF)(ref clientRect2)).Width / 2f + ((RectangleF)(ref getWindowRectangleTimeCache)).X, ((RectangleF)(ref clientRect2)).Y + ((RectangleF)(ref clientRect2)).Height / 2f + ((RectangleF)(ref getWindowRectangleTimeCache)).Y));
+						BotInput.Click(new Vector2(clientRect2.X + clientRect2.Width / 2f + getWindowRectangleTimeCache.X, clientRect2.Y + clientRect2.Height / 2f + getWindowRectangleTimeCache.Y));
 						_lastDismissAt = DateTime.Now;
 						base.LogMessage("[AutoExile] Dismissing unexpected RitualShop (clicking X button)");
 						return false;
@@ -2070,7 +2070,7 @@ public class BotCore : BaseSettingsPlugin<BotSettings>
 			if (sellWindow != null && ((Element)sellWindow).IsVisible && BotInput.CanAct && (DateTime.Now - _lastDismissAt).TotalMilliseconds > 500.0)
 			{
 				RectangleF windowRectangle2 = gameController.Window.GetWindowRectangle();
-				BotInput.Click(new Vector2(((RectangleF)(ref windowRectangle2)).X + ((RectangleF)(ref windowRectangle2)).Width * 0.5f, ((RectangleF)(ref windowRectangle2)).Y + ((RectangleF)(ref windowRectangle2)).Height * 0.4f));
+				BotInput.Click(new Vector2(windowRectangle2.X + windowRectangle2.Width * 0.5f, windowRectangle2.Y + windowRectangle2.Height * 0.4f));
 				_lastDismissAt = DateTime.Now;
 				base.LogMessage("[AutoExile] Dismissing unexpected VendorWindow (clicking world)");
 				return false;
