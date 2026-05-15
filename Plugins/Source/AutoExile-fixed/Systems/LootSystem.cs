@@ -231,8 +231,16 @@ namespace AutoExile.Systems
                     }
                 }
 
-                // Always sort nearest first — efficient pathing beats value optimization
-                _candidates.Sort((a, b) => a.Distance.CompareTo(b.Distance));
+                // High-value items (≥20c) first, then nearest-first within each tier
+                const double highValueThreshold = 20.0;
+                _candidates.Sort((a, b) =>
+                {
+                    bool aHigh = a.ChaosValue >= highValueThreshold;
+                    bool bHigh = b.ChaosValue >= highValueThreshold;
+                    if (aHigh != bHigh) return aHigh ? -1 : 1;
+                    if (aHigh) return b.ChaosValue.CompareTo(a.ChaosValue);
+                    return a.Distance.CompareTo(b.Distance);
+                });
 
                 LootableCount = _candidates.Count;
                 HasLootNearby = _candidates.Count > 0;

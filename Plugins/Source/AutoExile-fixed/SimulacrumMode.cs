@@ -98,17 +98,9 @@ namespace AutoExile.Modes
         public string Decision
         {
             get => _decision;
-            private set
-            {
-                if (value == _decision) return;
-                _decision = value;
-                _pendingDecisionLog = value;
-            }
+            private set => _decision = value;
         }
         private string _decision = "";
-        private string? _pendingDecisionLog;
-        private SimPhase _lastLoggedPhase = (SimPhase)(-1);
-        private DateTime _lastStateDebugLog = DateTime.MinValue;
 
         public void OnEnter(BotContext ctx)
         {
@@ -189,40 +181,6 @@ namespace AutoExile.Modes
                 _lastAreaName = currentArea;
             }
 
-            // Diagnostic: log phase transitions, decision changes, and periodic monolith state
-            if (_phase != _lastLoggedPhase)
-            {
-                ctx.Log($"[Sim] Phase {_lastLoggedPhase} -> {_phase} | Wave={_state.WavesCompleted}/{SimulacrumState.MaxWavesInEncounter} Active={_state.IsWaveActive} Complete={_state.IsEncounterComplete} | Status={StatusText}");
-                _lastLoggedPhase = _phase;
-            }
-            if (_pendingDecisionLog != null)
-            {
-                ctx.Log($"[Sim] Decision: {_pendingDecisionLog}");
-                _pendingDecisionLog = null;
-            }
-            bool inMapForDebug = gc.Area?.CurrentArea != null &&
-                                 !gc.Area.CurrentArea.IsHideout &&
-                                 !gc.Area.CurrentArea.IsTown;
-            if (inMapForDebug && (DateTime.Now - _lastStateDebugLog).TotalSeconds >= 5.0)
-            {
-                _lastStateDebugLog = DateTime.Now;
-                Entity? mono = null;
-                if (_state.MonolithId.HasValue)
-                    mono = gc.EntityListWrapper.OnlyValidEntities.FirstOrDefault(e => e.Id == _state.MonolithId.Value);
-                if (mono == null)
-                    mono = gc.EntityListWrapper.OnlyValidEntities.FirstOrDefault(e => e.Metadata?.Contains("Objects/Afflictionator") == true);
-                string stateStr = "(no monolith)";
-                if (mono != null && mono.TryGetComponent<StateMachine>(out var sm))
-                {
-                    var act = sm.States.FirstOrDefault(s => s.Name == "active")?.Value ?? -1;
-                    var wv  = sm.States.FirstOrDefault(s => s.Name == "wave")?.Value ?? -1;
-                    var gb  = sm.States.FirstOrDefault(s => s.Name == "goodbye")?.Value ?? -1;
-                    var all = string.Join(",", sm.States.Select(s => $"{s.Name}={s.Value}"));
-                    stateStr = $"active={act} wave={wv} goodbye={gb} all=[{all}]";
-                }
-                ctx.Log($"[SimDebug] Phase={_phase} WavesCompleted={_state.WavesCompleted} IsWaveActive={_state.IsWaveActive} EncounterComplete={_state.IsEncounterComplete} CanStartIn={(_state.CanStartWaveAt - DateTime.Now).TotalSeconds:F1}s Monolith={stateStr}");
-            }
-
             // Always tick state when in map; combat only during active phases
             bool inMap = gc.Area?.CurrentArea != null &&
                          !gc.Area.CurrentArea.IsHideout &&
@@ -260,16 +218,11 @@ namespace AutoExile.Modes
                         _consecutiveFailedRuns++;
                         _state.Reset();
                         if (_consecutiveFailedRuns >= MaxConsecutiveFailedRuns)
-                        {
-                            _phase = SimPhase.Idle;
-                            StatusText = $"Stopped: no re-entry portal found on {_consecutiveFailedRuns} " +
-                                         "consecutive runs. Check the hideout and fragment tab settings.";
-                            break;
-                        }
+                            _consecutiveFailedRuns = 0;
                         _phase = SimPhase.InHideout;
                         _phaseStartTime = DateTime.Now;
                         StartHideoutFlow(ctx);
-                        StatusText = "No portal found — starting new run";
+                        StatusText = "No portal found — starting fresh run";
                     }
                     else if (signal == HideoutSignal.NoFragments)
                     {
@@ -336,11 +289,25 @@ namespace AutoExile.Modes
                 }
                 else if (_state.DeathCount > 0 && _state.DeathCount < ctx.Settings.Run.MaxDeaths.Value)
                 {
-                    // Died — try to re-enter
-                    _phase = SimPhase.EnterPortal;
-                    _phaseStartTime = DateTime.Now;
-                    _hideoutFlow.StartPortalReentry();
-                    StatusText = $"Revived (death {_state.DeathCount}) — re-entering map";
+                    if (_state.WavesCompleted >= SimulacrumState.MaxWavesInEncounter - 2)
+                    {
+                        // Died on final waves — encounter is effectively over, start fresh
+                        _state.Reset();
+                        _lootTracker.ResetCount();
+                        _consecutiveFailedRuns = 0;
+                        _phase = SimPhase.InHideout;
+                        _phaseStartTime = DateTime.Now;
+                        StartHideoutFlow(ctx);
+                        StatusText = "Died on final waves — encounter done, starting fresh run";
+                    }
+                    else
+                    {
+                        // Died mid-run — try to re-enter
+                        _phase = SimPhase.EnterPortal;
+                        _phaseStartTime = DateTime.Now;
+                        _hideoutFlow.StartPortalReentry();
+                        StatusText = $"Revived (death {_state.DeathCount}) — re-entering map";
+                    }
                 }
                 else if (_state.DeathCount >= ctx.Settings.Run.MaxDeaths.Value)
                 {
@@ -393,9 +360,20 @@ namespace AutoExile.Modes
             {
                 // Entered map — reset exploration so we start fresh.
                 var deathCount = _state.DeathCount;
+                var prevMonolithPos = _state.MonolithPosition;
+                var prevWavesCompleted = _state.WavesCompleted;
                 _state.OnAreaChanged();
                 _state.DeathCount = deathCount;
-                _phase = SimPhase.FindMonolith;
+                if (deathCount > 0 && prevMonolithPos.HasValue)
+                {
+                    _state.RestoreForReentry(prevMonolithPos.Value, prevWavesCompleted);
+                    _phase = SimPhase.NavigateToMonolith;
+                    StatusText = "Re-entering after death — navigating to monolith";
+                }
+                else
+                {
+                    _phase = SimPhase.FindMonolith;
+                }
                 _phaseStartTime = DateTime.Now;
 
                 // Compute a fresh random wave delay for this map entry.

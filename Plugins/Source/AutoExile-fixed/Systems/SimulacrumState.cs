@@ -107,6 +107,17 @@ namespace AutoExile.Systems
         }
 
         /// <summary>
+        /// Restore monolith position and wave count after death re-entry so the bot
+        /// navigates directly to the monolith instead of re-exploring the whole arena.
+        /// Call immediately after OnAreaChanged() when re-entering after a death.
+        /// </summary>
+        public void RestoreForReentry(Vector2 monolithPosition, int wavesCompleted)
+        {
+            MonolithPosition = monolithPosition;
+            WavesCompleted = wavesCompleted;
+        }
+
+        /// <summary>
         /// Call on area change to clear entity references but preserve run-level state.
         /// </summary>
         public void OnAreaChanged()
