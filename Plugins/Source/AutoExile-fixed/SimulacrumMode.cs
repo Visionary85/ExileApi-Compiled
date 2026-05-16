@@ -691,7 +691,6 @@ namespace AutoExile.Modes
                     _wasSearching = true;
                     ctx.Exploration.SeenRadiusOverride = 40;
                     ctx.Exploration.ResetSeen();
-                    _blacklistedMonsters.Clear();
                     Decision = $"Wave {_state.WavesCompleted + 1} — dead zone unstick (no movement for {DeadZoneUnstickSeconds:F0}s)";
                     StatusText = $"Wave {_state.WavesCompleted + 1}/{SimulacrumState.MaxWavesInEncounter} — unsticking navigation...";
                 }
