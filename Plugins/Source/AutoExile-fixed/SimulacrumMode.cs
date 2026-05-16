@@ -81,6 +81,19 @@ namespace AutoExile.Modes
         // (known Mirage league behaviour), we exit after 10s with zero cached monsters.
         private DateTime _finalWaveNoMonstersAt = DateTime.MinValue;
         private static readonly Random _rng = new();
+
+        // Uniques to always pick up in Simulacrum regardless of ninja price.
+        // Voices and Megalomaniac are Simulacrum-exclusive; the rest are rare chase items
+        // that can drop here and are too valuable to risk on a price-service hiccup.
+        private static readonly string[] _simulacrumMustLoot =
+        {
+            "Voices",        // unique Large Cluster Jewel
+            "Megalomaniac",  // unique Medium Cluster Jewel
+            "Mageblood",     // unique Heavy Belt
+            "Headhunter",    // unique Leather Belt
+            "Bottled Faith", // unique Sulphur Flask
+            "The Squire",    // unique Ezomyte Tower Shield
+        };
         private static float RandRange(float min, float max) =>
             min + (float)(_rng.NextDouble() * (max - min));
         private float _currentWaveDelay;
@@ -130,6 +143,10 @@ namespace AutoExile.Modes
 
             // Enable combat
             ModeHelpers.EnableDefaultCombat(ctx);
+
+            // High-value Simulacrum drops — always pick up regardless of ninja price
+            foreach (var name in _simulacrumMustLoot)
+                ctx.Loot.MustLootUniques.Add(name);
 
             // Determine starting phase based on location
             var gc = ctx.Game;
