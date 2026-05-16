@@ -720,22 +720,12 @@ namespace AutoExile.Systems
 
             var maxValue = priceResult.MaxChaosValue;
 
-            // If we can't price it: check if art mapping has candidates.
-            // If art resolved to known names but none have ninja prices, the item is unlisted junk — skip it.
-            // Only keep "might be valuable" for items with NO art mapping entry (truly unknown).
+            // If we can't price it: keep all uniques we can't price.
+            // "Known art, no ninja price" does NOT mean junk — it means the price service had a
+            // cache miss, API hiccup, or the item is new/rare and unlisted. Skipping unpriced
+            // items causes misses on valuable drops (Mageblood, Voices, etc.) when ninja returns 0.
             if (maxValue <= 0)
-            {
-                if (!mods.Identified && PriceService != null)
-                {
-                    var candidates = PriceService.GetCandidateNames(entity);
-                    if (candidates.Count > 0)
-                    {
-                        LastSkipReason = $"Skipped '{itemName}' (art mapped to {string.Join(", ", candidates)} but no ninja price)";
-                        return true; // Known art, no price = junk
-                    }
-                }
-                return false; // Unknown art = might be valuable
-            }
+                return false;
 
             // Flat value check — use max (optimistic: don't skip if it could be valuable)
             if (maxValue < MinUniqueChaosValue)
