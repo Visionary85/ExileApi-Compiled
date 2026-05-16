@@ -69,6 +69,12 @@ namespace AutoExile.Modes
         private int _combatEngageMaxTotal;
         private const float CombatStuckSeconds = 30f;
 
+        // Dead zone unstick — player position hasn't changed for this long during an active wave
+        private Vector2 _lastMovementPos;
+        private DateTime _lastMovementAt = DateTime.MinValue;
+        private const float DeadZoneUnstickSeconds = 25f;
+        private const float MovementThresholdGrid = 5f;
+
         // Monster blacklist — temporarily ignore monsters we can't kill so we reposition via explore
         private readonly Dictionary<long, DateTime> _blacklistedMonsters = new();
         private const float MonsterBlacklistSeconds = 10f;
@@ -125,6 +131,7 @@ namespace AutoExile.Modes
             _combatEngageCount = 0;
             _combatEngageMaxTotal = 0;
             _blacklistedMonsters.Clear();
+            _lastMovementAt = DateTime.MinValue;
 
             _finalWaveNoMonstersAt = DateTime.MinValue;
 
@@ -393,7 +400,8 @@ namespace AutoExile.Modes
                 _combatEngageCount = 0;
                 _combatEngageMaxTotal = 0;
                 _blacklistedMonsters.Clear();
-    
+                _lastMovementAt = DateTime.MinValue;
+
                 _finalWaveNoMonstersAt = DateTime.MinValue;
 
                 // Force-reinitialize exploration for this new instance
@@ -573,6 +581,7 @@ namespace AutoExile.Modes
                 _waveStartFirstTryTime = DateTime.MinValue;
                 _waveStartLastClickTime = DateTime.MinValue;
                 _betweenWaveStartTime = DateTime.MinValue;
+                _lastMovementAt = DateTime.MinValue;
             }
 
             // --- Priority 0: Don't interrupt active loot pickup ---
@@ -656,11 +665,35 @@ namespace AutoExile.Modes
                 // After clicking the monolith, pause near it to let monsters fully spawn.
                 if (DateTime.Now < _waveSpawnWaitUntil)
                 {
+                    // Keep the stuck timer from counting during an intentional pause
+                    _lastMovementAt = DateTime.Now;
+                    _lastMovementPos = playerPos;
                     IdleNearMonolith(ctx);
                     var spawnWait = (_waveSpawnWaitUntil - DateTime.Now).TotalSeconds;
                     Decision = $"Wave {_state.WavesCompleted + 1} — waiting for spawn ({spawnWait:F1}s)";
                     StatusText = $"Wave {_state.WavesCompleted + 1}/{SimulacrumState.MaxWavesInEncounter} — waiting for monsters to spawn...";
                     return;
+                }
+
+                // Dead zone unstick: if the player hasn't moved for DeadZoneUnstickSeconds,
+                // pathfinding has silently stalled. Force a nav+exploration reset.
+                if (_lastMovementAt == DateTime.MinValue ||
+                    Vector2.Distance(playerPos, _lastMovementPos) > MovementThresholdGrid)
+                {
+                    _lastMovementPos = playerPos;
+                    _lastMovementAt = DateTime.Now;
+                }
+                else if ((DateTime.Now - _lastMovementAt).TotalSeconds > DeadZoneUnstickSeconds)
+                {
+                    _lastMovementAt = DateTime.Now;
+                    _lastMovementPos = playerPos;
+                    ctx.Navigation.Stop(gc);
+                    _wasSearching = true;
+                    ctx.Exploration.SeenRadiusOverride = 40;
+                    ctx.Exploration.ResetSeen();
+                    _blacklistedMonsters.Clear();
+                    Decision = $"Wave {_state.WavesCompleted + 1} — dead zone unstick (no movement for {DeadZoneUnstickSeconds:F0}s)";
+                    StatusText = $"Wave {_state.WavesCompleted + 1}/{SimulacrumState.MaxWavesInEncounter} — unsticking navigation...";
                 }
 
                 if (ctx.Combat.NearbyMonsterCount > 0)
