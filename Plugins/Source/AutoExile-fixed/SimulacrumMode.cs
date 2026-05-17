@@ -741,8 +741,9 @@ namespace AutoExile.Modes
                         if (_wasSearching)
                         {
                             _wasSearching = false;
-                            ctx.Navigation.Stop(gc);
                             ctx.Exploration.SeenRadiusOverride = 0;
+                            // Do not stop navigation here — let the existing path continue.
+                            // The combat redirect below will smooth-adjust the destination.
                         }
 
                         if (ctx.Combat.WantsToMove &&
@@ -750,15 +751,22 @@ namespace AutoExile.Modes
                             !ctx.Interaction.IsBusy)
                         {
                             var combatTarget = ctx.Combat.MoveTargetGrid;
-                            var navPath = ctx.Navigation.CurrentNavPath;
-                            var currentDest = navPath.Count > 0 ? navPath[navPath.Count - 1].Position : playerPos;
-                            if (!ctx.Navigation.IsNavigating ||
-                                Vector2.Distance(currentDest, combatTarget) > 20f)
-                            {
-                                ctx.Navigation.Stop(gc);
+                            // Smooth redirect: adjust existing path rather than stop+restart.
+                            // Drift threshold of 40 prevents micro-corrections when the combat
+                            // target shifts slightly between ticks due to moving enemies.
+                            if (ctx.Navigation.IsNavigating)
+                                ctx.Navigation.UpdateDestination(gc, combatTarget, driftThreshold: 40f);
+                            else
                                 ctx.Navigation.NavigateTo(gc, combatTarget);
-                            }
                             Decision = $"Wave {_state.WavesCompleted + 1} — aggressive: pathing to density @ ({combatTarget.X:F0},{combatTarget.Y:F0})";
+                        }
+                        else if (ctx.Combat.CachedMonsterCount > ctx.Combat.NearbyMonsterCount &&
+                                 !ctx.Interaction.IsBusy)
+                        {
+                            // More monsters exist beyond the nearby pack. Minions will kill
+                            // what's here automatically — keep walking toward the next cluster.
+                            TickExploreForMonsters(ctx);
+                            Decision = $"Wave {_state.WavesCompleted + 1} — advancing to next cluster ({ctx.Combat.CachedMonsterCount - ctx.Combat.NearbyMonsterCount} ahead)";
                         }
                         else
                         {
@@ -943,7 +951,7 @@ namespace AutoExile.Modes
                     if (monsterDist > 20f)
                     {
                         if (ctx.Navigation.IsNavigating)
-                            ctx.Navigation.UpdateDestination(gc, nearestPos.Value, driftThreshold: 15f);
+                            ctx.Navigation.UpdateDestination(gc, nearestPos.Value, driftThreshold: 30f);
                         else
                             ctx.Navigation.NavigateTo(gc, nearestPos.Value);
                     }
