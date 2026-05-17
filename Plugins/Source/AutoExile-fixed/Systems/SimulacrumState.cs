@@ -220,6 +220,38 @@ namespace AutoExile.Systems
                     var isActive = state.States.FirstOrDefault(s => s.Name == "active")?.Value > 0;
                     var wave = (int)(state.States.FirstOrDefault(s => s.Name == "wave")?.Value ?? 0);
 
+                    // On first monolith contact this session, seed WavesCompleted from the
+                    // StateMachine so the bot correctly resumes a mid-run restart.
+                    // Guards:
+                    //   _lastMonolithUpdate == MinValue  → truly first read this session
+                    //   WavesCompleted == 0              → haven't counted any transitions yet
+                    //   wave > 0                         → at least one wave has occurred
+                    // The case wave==MaxWaves && !isActive is skipped: Mirage league initialises
+                    // 'wave' to 15 before the encounter starts, making it indistinguishable from
+                    // a legitimate wave-15 completion.
+                    if (WavesCompleted == 0 && _lastMonolithUpdate == DateTime.MinValue && wave > 0)
+                    {
+                        if (isActive)
+                        {
+                            // Wave N is currently running → N-1 waves have been completed
+                            WavesCompleted = Math.Max(0, wave - 1);
+                        }
+                        else if (wave < MaxWavesInEncounter)
+                        {
+                            // Paused between waves after wave N finished → N waves completed
+                            WavesCompleted = wave;
+                        }
+                        // wave == MaxWavesInEncounter && !isActive: ambiguous pre-game state, skip
+
+                        if (WavesCompleted > 0)
+                        {
+                            if (WavesCompleted > HighestWaveThisRun)
+                                HighestWaveThisRun = WavesCompleted;
+                            _prevIsWaveActive = isActive;
+                            _waveActiveStartedAt = isActive ? DateTime.Now : DateTime.MinValue;
+                        }
+                    }
+
                     // Wave just ended — enforce delay before next start
                     if (IsWaveActive && !isActive)
                         CanStartWaveAt = DateTime.Now.AddSeconds(minWaveDelay);
