@@ -80,11 +80,12 @@ namespace AutoExile.Modes
         private readonly Dictionary<long, DateTime> _blacklistedMonsters = new();
         private const float MonsterBlacklistSeconds = 10f;
 
-        // Movement data collection — set to true to write a CSV log for analysis.
-        // Each run produces a timestamped file in Logs/SimMovement/ next to the game exe.
+        // Movement and loot data collection.
+        // Each run produces timestamped files in Logs/SimMovement/ next to the game exe.
         private const bool MovementLogEnabled = true;
         private const float MovementLogIntervalMs = 500f;
         private StreamWriter? _movementLog;
+        private StreamWriter? _lootLog;
         private DateTime _lastMovementLogWrite = DateTime.MinValue;
         private DateTime _runLogStart = DateTime.MinValue;
         private Vector2 _lastLoggedPlayerPos;
@@ -149,6 +150,10 @@ namespace AutoExile.Modes
             ModeHelpers.EnableDefaultCombat(ctx);
 
             OpenMovementLog();
+            OpenLootLog();
+
+            ctx.Loot.OnItemSkipped = (itemName, reason, chaosValue) =>
+                WriteLootEvent("Skip", itemName, chaosValue, reason);
 
             // Determine starting phase based on location
             var gc = ctx.Game;
@@ -184,6 +189,7 @@ namespace AutoExile.Modes
         public void OnExit()
         {
             CloseMovementLog();
+            CloseLootLog();
             _state.Reset();
             _phase = SimPhase.Idle;
             _isStashing = false;
@@ -623,6 +629,7 @@ namespace AutoExile.Modes
                     if (candidate != null && ctx.Interaction.IsBusy)
                     {
                         _lootTracker.SetPending(candidate.Entity.Id, candidate.ItemName, candidate.ChaosValue);
+                        WriteLootEvent("Pickup", candidate.ItemName, candidate.ChaosValue);
                         Decision = $"Loot: {candidate.ItemName}";
                         StatusText = $"Picking up {candidate.ItemName}";
                         return;
@@ -855,6 +862,7 @@ namespace AutoExile.Modes
                         if (candidate != null && ctx.Interaction.IsBusy)
                         {
                             _lootTracker.SetPending(candidate.Entity.Id, candidate.ItemName, candidate.ChaosValue);
+                            WriteLootEvent("Pickup", candidate.ItemName, candidate.ChaosValue);
                             Decision = $"Between waves — loot: {candidate.ItemName}";
                             StatusText = $"Picking up {candidate.ItemName} (between waves)";
                             return;
@@ -977,6 +985,41 @@ namespace AutoExile.Modes
             try { _movementLog?.Flush(); _movementLog?.Close(); }
             catch { }
             _movementLog = null;
+        }
+
+        private void OpenLootLog()
+        {
+            if (!MovementLogEnabled) return;
+            try
+            {
+                var logDir = Path.Combine(
+                    AppDomain.CurrentDomain.BaseDirectory, "Logs", "SimMovement");
+                Directory.CreateDirectory(logDir);
+                var fileName = $"loot_{DateTime.Now:yyyyMMdd_HHmmss}.csv";
+                _lootLog = new StreamWriter(Path.Combine(logDir, fileName), append: false);
+                _lootLog.WriteLine("TimeMs,Wave,WaveActive,Phase,Action,ItemName,ChaosValue,Reason");
+                _lootLog.Flush();
+            }
+            catch { _lootLog = null; }
+        }
+
+        private void CloseLootLog()
+        {
+            try { _lootLog?.Flush(); _lootLog?.Close(); }
+            catch { }
+            _lootLog = null;
+        }
+
+        private void WriteLootEvent(string action, string itemName, double chaosValue, string reason = "")
+        {
+            if (_lootLog == null) return;
+            var timeMs = (long)(DateTime.Now - _runLogStart).TotalMilliseconds;
+            var safeName = itemName.Replace(',', ';');
+            var safeReason = reason.Replace(',', ';');
+            _lootLog.WriteLine(
+                $"{timeMs},{_state.WavesCompleted + 1},{(_state.IsWaveActive ? 1 : 0)}," +
+                $"{_phase},{action},{safeName},{chaosValue:F1},{safeReason}");
+            _lootLog.Flush();
         }
 
         private void WriteMovementSnapshot(BotContext ctx)
@@ -1455,6 +1498,7 @@ namespace AutoExile.Modes
                 ctx.Interaction.PickupGroundItem(best.Entity, ctx.Navigation,
                     requireProximity: !withinRadius);
                 _lootTracker.SetPending(best.Entity.Id, best.ItemName, best.ChaosValue);
+                WriteLootEvent("Pickup", best.ItemName, best.ChaosValue);
                 StatusText = $"Sweep: picking up {best.ItemName} ({_lootTracker.PickupCount} picked)";
                 return;
             }
