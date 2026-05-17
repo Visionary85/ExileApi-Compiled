@@ -73,8 +73,8 @@ namespace AutoExile.Modes
         // Dead zone unstick — player position hasn't changed for this long during an active wave
         private Vector2 _lastMovementPos;
         private DateTime _lastMovementAt = DateTime.MinValue;
-        private const float DeadZoneUnstickSeconds = 25f;
-        private const float MovementThresholdGrid = 5f;
+        private const float DeadZoneUnstickSeconds = 15f;
+        private const float MovementThresholdGrid = 3f;
 
         // Monster blacklist — temporarily ignore monsters we can't kill so we reposition via explore
         private readonly Dictionary<long, DateTime> _blacklistedMonsters = new();
@@ -1037,6 +1037,18 @@ namespace AutoExile.Modes
 
             PruneBlacklist();
 
+            // If already navigating to our own position, abort — this is the zero-distance nav lock
+            if (ctx.Navigation.IsNavigating)
+            {
+                var navPath = ctx.Navigation.CurrentNavPath;
+                if (navPath.Count > 0)
+                {
+                    var navDest = navPath[navPath.Count - 1].Position;
+                    if (Vector2.Distance(playerPos, navDest) < 5f)
+                        ctx.Navigation.Stop(gc);
+                }
+            }
+
             // Tier 1: Known monsters — navigate toward nearest non-blacklisted
             if (ctx.Combat.CachedMonsterCount > 0)
             {
@@ -1091,7 +1103,8 @@ namespace AutoExile.Modes
                     var angle = (float)(DateTime.Now.Ticks % 62830) / 10000f;
                     var radius = 40f + 25f * MathF.Sin(angle * 0.3f);
                     var orbitTarget = _state.MonolithPosition.Value + new Vector2(MathF.Cos(angle), MathF.Sin(angle)) * radius;
-                    ctx.Navigation.NavigateTo(gc, orbitTarget);
+                    if (Vector2.Distance(playerPos, orbitTarget) > 15f)
+                        ctx.Navigation.NavigateTo(gc, orbitTarget);
                 }
                 StatusText = $"Wave {_state.WavesCompleted + 1}/{SimulacrumState.MaxWavesInEncounter} — sweeping for monsters";
                 return;
