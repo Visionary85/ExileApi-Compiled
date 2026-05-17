@@ -5,6 +5,7 @@ using ExileCore.Shared.Enums;
 using AutoExile.Systems;
 using AutoExile.Modes.Shared;
 using System.Numerics;
+using System.IO;
 
 namespace AutoExile.Modes
 {
@@ -79,6 +80,15 @@ namespace AutoExile.Modes
         private readonly Dictionary<long, DateTime> _blacklistedMonsters = new();
         private const float MonsterBlacklistSeconds = 10f;
 
+        // Movement data collection — set to true to write a CSV log for analysis.
+        // Each run produces a timestamped file in Logs/SimMovement/ next to the game exe.
+        private const bool MovementLogEnabled = true;
+        private const float MovementLogIntervalMs = 500f;
+        private StreamWriter? _movementLog;
+        private DateTime _lastMovementLogWrite = DateTime.MinValue;
+        private DateTime _runLogStart = DateTime.MinValue;
+        private Vector2 _lastLoggedPlayerPos;
+
 
         // Action cooldown
         private const float MajorActionCooldownMs = 500f;
@@ -138,6 +148,8 @@ namespace AutoExile.Modes
             // Enable combat
             ModeHelpers.EnableDefaultCombat(ctx);
 
+            OpenMovementLog();
+
             // Determine starting phase based on location
             var gc = ctx.Game;
             if (gc.Area.CurrentArea.IsHideout || gc.Area.CurrentArea.IsTown)
@@ -171,6 +183,7 @@ namespace AutoExile.Modes
 
         public void OnExit()
         {
+            CloseMovementLog();
             _state.Reset();
             _phase = SimPhase.Idle;
             _isStashing = false;
@@ -264,6 +277,9 @@ namespace AutoExile.Modes
                     StatusText = "Idle";
                     break;
             }
+
+            if (inMap)
+                WriteMovementSnapshot(ctx);
         }
 
         // =================================================================
@@ -928,6 +944,87 @@ namespace AutoExile.Modes
             Decision = $"Loot clear — waiting ({waitRemaining:F1}s)";
             IdleNearMonolith(ctx);
             StatusText = $"Wave {_state.WavesCompleted}/{SimulacrumState.MaxWavesInEncounter} done — {waitRemaining:F1}s until next wave";
+        }
+
+        // =================================================================
+        // Movement data collection
+        // =================================================================
+
+        private void OpenMovementLog()
+        {
+            if (!MovementLogEnabled) return;
+            try
+            {
+                var logDir = Path.Combine(
+                    AppDomain.CurrentDomain.BaseDirectory, "Logs", "SimMovement");
+                Directory.CreateDirectory(logDir);
+                var fileName = $"sim_{DateTime.Now:yyyyMMdd_HHmmss}.csv";
+                _movementLog = new StreamWriter(Path.Combine(logDir, fileName), append: false);
+                _movementLog.WriteLine(
+                    "TimeMs,Wave,WaveActive,Phase,Decision," +
+                    "PlayerX,PlayerY,MovedSinceLastLog," +
+                    "Nearby,Cached,Navigating,NavDestX,NavDestY," +
+                    "WantsToMove,Searching,NoMoveSecs,CombatEngageSecs");
+                _movementLog.Flush();
+                _runLogStart = DateTime.Now;
+                _lastMovementLogWrite = DateTime.MinValue;
+            }
+            catch { _movementLog = null; }
+        }
+
+        private void CloseMovementLog()
+        {
+            try { _movementLog?.Flush(); _movementLog?.Close(); }
+            catch { }
+            _movementLog = null;
+        }
+
+        private void WriteMovementSnapshot(BotContext ctx)
+        {
+            if (!MovementLogEnabled || _movementLog == null) return;
+            if ((DateTime.Now - _lastMovementLogWrite).TotalMilliseconds < MovementLogIntervalMs) return;
+            _lastMovementLogWrite = DateTime.Now;
+
+            try
+            {
+                var gc = ctx.Game;
+                var pos = gc.Player?.GridPosNum ?? Vector2.Zero;
+                var timeMs = (long)(DateTime.Now - _runLogStart).TotalMilliseconds;
+
+                // Nav destination — last waypoint in current path
+                var navPath = ctx.Navigation.CurrentNavPath;
+                var navDest = navPath.Count > 0 ? navPath[navPath.Count - 1].Position : Vector2.Zero;
+
+                // Whether player has moved meaningfully since last snapshot
+                var moved = Vector2.Distance(pos, _lastLoggedPlayerPos) > 2f;
+                _lastLoggedPlayerPos = pos;
+
+                // Seconds since last meaningful movement (from dead zone tracker)
+                var noMoveSecs = _lastMovementAt == DateTime.MinValue ? 0.0
+                    : (DateTime.Now - _lastMovementAt).TotalSeconds;
+
+                // Seconds engaged with the same combat target (0 if not engaged)
+                var combatSecs = _combatEngageTime == DateTime.MinValue ? 0.0
+                    : (DateTime.Now - _combatEngageTime).TotalSeconds;
+
+                // Sanitise decision for CSV (strip commas)
+                var decision = _decision.Replace(',', ';');
+
+                _movementLog.WriteLine(
+                    $"{timeMs},{_state.WavesCompleted + 1},{(_state.IsWaveActive ? 1 : 0)}," +
+                    $"{_phase},{decision}," +
+                    $"{pos.X:F1},{pos.Y:F1},{(moved ? 1 : 0)}," +
+                    $"{ctx.Combat.NearbyMonsterCount},{ctx.Combat.CachedMonsterCount}," +
+                    $"{(ctx.Navigation.IsNavigating ? 1 : 0)}," +
+                    $"{navDest.X:F1},{navDest.Y:F1}," +
+                    $"{(ctx.Combat.WantsToMove ? 1 : 0)},{(_wasSearching ? 1 : 0)}," +
+                    $"{noMoveSecs:F1},{combatSecs:F1}");
+
+                // Flush every 10 writes so data isn't lost if the game crashes
+                if (timeMs % 5000 < MovementLogIntervalMs)
+                    _movementLog.Flush();
+            }
+            catch { }
         }
 
         /// <summary>
