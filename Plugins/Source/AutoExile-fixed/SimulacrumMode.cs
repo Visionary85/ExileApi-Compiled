@@ -42,6 +42,13 @@ namespace AutoExile.Modes
         // Phase change tracking — for event log
         private SimPhase _prevPhase = SimPhase.Idle;
 
+        // Wave lifecycle tracking — for WaveStart/WaveEnd events
+        private bool _prevWaveActive;
+        private DateTime _waveActiveStartTime = DateTime.MinValue;
+
+        // Monolith found tracking — fire event only once per run
+        private bool _monolithFoundLogged;
+
         // Loot tracking — only record on confirmed pickup
         private DateTime _lastLootScan = DateTime.MinValue;
         private const float LootScanIntervalMs = 500;
@@ -236,6 +243,29 @@ namespace AutoExile.Modes
                     WriteEvent("Death", $"Wave {_state.WavesCompleted + 1} death #{_state.DeathCount}", "");
                 }
                 _playerWasAlive = playerAlive;
+
+                // Wave lifecycle events
+                var waveNowActive = _state.IsWaveActive;
+                if (waveNowActive && !_prevWaveActive)
+                {
+                    _waveActiveStartTime = DateTime.Now;
+                    WriteEvent("WaveStart", $"Wave {_state.WavesCompleted + 1}", "");
+                }
+                else if (!waveNowActive && _prevWaveActive && _waveActiveStartTime != DateTime.MinValue)
+                {
+                    var waveDuration = (DateTime.Now - _waveActiveStartTime).TotalSeconds;
+                    WriteEvent("WaveEnd", $"Wave {_state.WavesCompleted}", $"duration={waveDuration:F0}s");
+                    _waveActiveStartTime = DateTime.MinValue;
+                }
+                _prevWaveActive = waveNowActive;
+
+                // Monolith found — log once per run when position first locks in
+                if (!_monolithFoundLogged && _state.MonolithPosition.HasValue)
+                {
+                    _monolithFoundLogged = true;
+                    var mp = _state.MonolithPosition.Value;
+                    WriteEvent("MonolithFound", $"({mp.X:F0};{mp.Y:F0})", "");
+                }
 
                 // Disable combat during LootSweep/ExitMap — we need to navigate freely
                 // to pick up remaining items and reach the portal without being dragged into fights
@@ -468,8 +498,10 @@ namespace AutoExile.Modes
                 _combatEngageMaxTotal = 0;
                 _blacklistedMonsters.Clear();
                 _lastMovementAt = DateTime.MinValue;
-
                 _finalWaveNoMonstersAt = DateTime.MinValue;
+                _prevWaveActive = false;
+                _waveActiveStartTime = DateTime.MinValue;
+                _monolithFoundLogged = false;
 
                 // Force-reinitialize exploration for this new instance
                 var pfGrid = gc.IngameState?.Data?.RawPathfindingData;
@@ -687,6 +719,7 @@ namespace AutoExile.Modes
                 (DateTime.Now - _state.WaveStartedAt).TotalMinutes > _settings.WaveTimeoutMinutes.Value)
             {
                 Decision = "Wave timeout → LootSweep";
+                WriteEvent("LootSweepStart", $"Wave {_state.WavesCompleted + 1}", "wave-timeout");
                 _phase = SimPhase.LootSweep;
                 _phaseStartTime = DateTime.Now;
                 _sweepNearMonolith = false;
@@ -712,6 +745,7 @@ namespace AutoExile.Modes
                 if (noMonsterSecs >= 10.0)
                 {
                     Decision = "Wave 15: no monsters for 10s → LootSweep";
+                    WriteEvent("LootSweepStart", $"Wave {_state.WavesCompleted + 1}", "final-wave-no-monsters");
                     _phase = SimPhase.LootSweep;
                     _phaseStartTime = DateTime.Now;
                     _sweepNearMonolith = false;
@@ -759,6 +793,7 @@ namespace AutoExile.Modes
                     _wasSearching = true;
                     ctx.Exploration.SeenRadiusOverride = 40;
                     ctx.Exploration.ResetSeen();
+                    WriteEvent("UnstickFired", $"Wave {_state.WavesCompleted + 1}", $"nearby={ctx.Combat.NearbyMonsterCount};cached={ctx.Combat.CachedMonsterCount}");
                     Decision = $"Wave {_state.WavesCompleted + 1} — dead zone unstick (no movement for {DeadZoneUnstickSeconds:F0}s)";
                     StatusText = $"Wave {_state.WavesCompleted + 1}/{SimulacrumState.MaxWavesInEncounter} — unsticking navigation...";
                 }
@@ -943,6 +978,7 @@ namespace AutoExile.Modes
             if (_state.IsEncounterComplete && !_state.IsWaveActive)
             {
                 Decision = $"All {SimulacrumState.MaxWavesInEncounter} waves complete → LootSweep";
+                WriteEvent("LootSweepStart", $"Wave {_state.WavesCompleted + 1}", "all-waves-complete");
                 _phase = SimPhase.LootSweep;
                 _phaseStartTime = DateTime.Now;
                 _sweepNearMonolith = false;
@@ -964,6 +1000,7 @@ namespace AutoExile.Modes
             if (betweenWaveElapsed > BetweenWaveTimeoutSeconds)
             {
                 Decision = "Between-wave timeout → LootSweep";
+                WriteEvent("LootSweepStart", $"Wave {_state.WavesCompleted + 1}", "between-wave-timeout");
                 _phase = SimPhase.LootSweep;
                 _phaseStartTime = DateTime.Now;
                 _sweepNearMonolith = false;
@@ -976,6 +1013,7 @@ namespace AutoExile.Modes
                 (DateTime.Now - _waveStartFirstTryTime).TotalSeconds > WaveStartTimeoutSeconds)
             {
                 Decision = $"Failed to start wave after {WaveStartTimeoutSeconds}s → LootSweep";
+                WriteEvent("LootSweepStart", $"Wave {_state.WavesCompleted + 1}", "wave-start-timeout");
                 _phase = SimPhase.LootSweep;
                 _phaseStartTime = DateTime.Now;
                 _sweepNearMonolith = false;
@@ -1017,7 +1055,8 @@ namespace AutoExile.Modes
                     "TimeMs,Wave,WaveActive,Phase,Decision," +
                     "PlayerX,PlayerY,MovedSinceLastLog," +
                     "Nearby,Cached,Navigating,NavDestX,NavDestY," +
-                    "WantsToMove,Searching,NoMoveSecs,CombatEngageSecs");
+                    "WantsToMove,Searching,NoMoveSecs,CombatEngageSecs," +
+                    "LootNearby,LootCount,Deaths");
                 _movementLog.Flush();
                 _runLogStart = DateTime.Now;
                 _lastMovementLogWrite = DateTime.MinValue;
@@ -1119,7 +1158,8 @@ namespace AutoExile.Modes
                     $"{(ctx.Navigation.IsNavigating ? 1 : 0)}," +
                     $"{navDest.X:F1},{navDest.Y:F1}," +
                     $"{(ctx.Combat.WantsToMove ? 1 : 0)},{(_wasSearching ? 1 : 0)}," +
-                    $"{noMoveSecs:F1},{combatSecs:F1}");
+                    $"{noMoveSecs:F1},{combatSecs:F1}," +
+                    $"{(ctx.Loot.HasLootNearby ? 1 : 0)},{ctx.Loot.LootableCount},{_state.DeathCount}");
 
                 // Flush every 10 writes so data isn't lost if the game crashes
                 if (timeMs % 5000 < MovementLogIntervalMs)
