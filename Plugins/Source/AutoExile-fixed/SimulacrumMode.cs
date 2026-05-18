@@ -36,6 +36,12 @@ namespace AutoExile.Modes
         private int _consecutiveFailedRuns;
         private const int MaxConsecutiveFailedRuns = 3;
 
+        // Death detection — track player alive state to catch deaths the base class may miss
+        private bool _playerWasAlive = true;
+
+        // Phase change tracking — for event log
+        private SimPhase _prevPhase = SimPhase.Idle;
+
         // Loot tracking — only record on confirmed pickup
         private DateTime _lastLootScan = DateTime.MinValue;
         private const float LootScanIntervalMs = 500;
@@ -207,6 +213,13 @@ namespace AutoExile.Modes
                 _lastAreaName = currentArea;
             }
 
+            // Phase change event logging
+            if (_phase != _prevPhase)
+            {
+                WriteEvent("PhaseChange", _phase.ToString(), _prevPhase.ToString());
+                _prevPhase = _phase;
+            }
+
             // Always tick state when in map; combat only during active phases
             bool inMap = gc.Area?.CurrentArea != null &&
                          !gc.Area.CurrentArea.IsHideout &&
@@ -214,6 +227,15 @@ namespace AutoExile.Modes
             if (inMap)
             {
                 _state.Tick(gc, _currentWaveDelay);
+
+                // Death detection: catch deaths the base class may not propagate to DeathCount
+                var playerAlive = gc.Player?.IsAlive ?? true;
+                if (!playerAlive && _playerWasAlive && _phase == SimPhase.WaveCycle)
+                {
+                    _state.DeathCount++;
+                    WriteEvent("Death", $"Wave {_state.WavesCompleted + 1} death #{_state.DeathCount}", "");
+                }
+                _playerWasAlive = playerAlive;
 
                 // Disable combat during LootSweep/ExitMap — we need to navigate freely
                 // to pick up remaining items and reach the portal without being dragged into fights
@@ -306,6 +328,7 @@ namespace AutoExile.Modes
                 if (_mapCompleted)
                 {
                     // Map completed — start new cycle
+                    WriteEvent("RunEnd", $"Complete-w{_state.WavesCompleted}", "");
                     _consecutiveFailedRuns = 0;
                     _state.RecordRunComplete();
                     _state.Reset();
@@ -321,6 +344,7 @@ namespace AutoExile.Modes
                     if (_state.WavesCompleted >= SimulacrumState.MaxWavesInEncounter - 2)
                     {
                         // Died on final waves — encounter is effectively over, start fresh
+                        WriteEvent("RunEnd", $"DiedFinalWaves-w{_state.WavesCompleted + 1}-deaths{_state.DeathCount}", "");
                         _state.Reset();
                         _lootTracker.ResetCount();
                         _consecutiveFailedRuns = 0;
@@ -332,6 +356,7 @@ namespace AutoExile.Modes
                     else
                     {
                         // Died mid-run — try to re-enter
+                        WriteEvent("RunEnd", $"DiedMidRun-w{_state.WavesCompleted + 1}-deaths{_state.DeathCount}", "reentry");
                         _phase = SimPhase.EnterPortal;
                         _phaseStartTime = DateTime.Now;
                         _hideoutFlow.StartPortalReentry();
@@ -341,6 +366,7 @@ namespace AutoExile.Modes
                 else if (_state.DeathCount >= ctx.Settings.Run.MaxDeaths.Value)
                 {
                     // Too many deaths — start fresh
+                    WriteEvent("RunEnd", $"TooManyDeaths-w{_state.WavesCompleted + 1}-deaths{_state.DeathCount}", "");
                     _consecutiveFailedRuns++;
                     _state.RecordRunComplete();
                     _state.Reset();
@@ -378,7 +404,26 @@ namespace AutoExile.Modes
                         }
                     }
 
+                    // If we were deep into the run (wave 10+), skip portal re-entry and start
+                    // fresh. Re-entry after high waves is unreliable: the bot re-enters with
+                    // no death context, gets confused about wave state, exits again, then
+                    // hunts for a portal that's now gone — causing 5-10 min hideout stalls.
+                    if (_state.WavesCompleted >= SimulacrumState.MaxWavesInEncounter - 5)
+                    {
+                        WriteEvent("RunEnd", $"UnexpectedReturn-w{_state.WavesCompleted + 1}", "");
+                        _consecutiveFailedRuns = 0;
+                        _state.RecordRunComplete();
+                        _state.Reset();
+                        _lootTracker.ResetCount();
+                        _phase = SimPhase.InHideout;
+                        _phaseStartTime = DateTime.Now;
+                        StartHideoutFlow(ctx);
+                        StatusText = $"Returned from late waves — starting fresh run";
+                        return;
+                    }
+
                     // Try portal re-entry before burning a new fragment
+                    WriteEvent("RunEnd", $"UnexpectedReturn-w{_state.WavesCompleted + 1}-reentry", "");
                     _phase = SimPhase.EnterPortal;
                     _phaseStartTime = DateTime.Now;
                     _hideoutFlow.StartPortalReentry();
@@ -997,7 +1042,7 @@ namespace AutoExile.Modes
                 Directory.CreateDirectory(logDir);
                 var fileName = $"loot_{DateTime.Now:yyyyMMdd_HHmmss}.csv";
                 _lootLog = new StreamWriter(Path.Combine(logDir, fileName), append: false);
-                _lootLog.WriteLine("TimeMs,Wave,WaveActive,Phase,Action,ItemName,ChaosValue,Reason");
+                _lootLog.WriteLine("TimeMs,Wave,WaveActive,Phase,Action,Detail,ChaosValue,Reason");
                 _lootLog.Flush();
             }
             catch { _lootLog = null; }
@@ -1019,6 +1064,19 @@ namespace AutoExile.Modes
             _lootLog.WriteLine(
                 $"{timeMs},{_state.WavesCompleted + 1},{(_state.IsWaveActive ? 1 : 0)}," +
                 $"{_phase},{action},{safeName},{chaosValue:F1},{safeReason}");
+            _lootLog.Flush();
+        }
+
+        // Log non-loot events (deaths, phase changes, run boundaries) to the same file
+        private void WriteEvent(string action, string detail, string reason)
+        {
+            if (_lootLog == null) return;
+            var timeMs = (long)(DateTime.Now - _runLogStart).TotalMilliseconds;
+            var safeDetail = detail.Replace(',', ';');
+            var safeReason = reason.Replace(',', ';');
+            _lootLog.WriteLine(
+                $"{timeMs},{_state.WavesCompleted + 1},{(_state.IsWaveActive ? 1 : 0)}," +
+                $"{_phase},{action},{safeDetail},0,{safeReason}");
             _lootLog.Flush();
         }
 
