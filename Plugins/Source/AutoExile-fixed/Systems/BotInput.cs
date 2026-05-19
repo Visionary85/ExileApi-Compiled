@@ -1399,6 +1399,46 @@ namespace AutoExile.Systems
         }
 
         /// <summary>
+        /// Ctrl+Shift+Left Click at an absolute screen position.
+        /// Bypasses item tab affinity — deposits the item into whichever stash tab is currently open.
+        /// Use as a fallback when Ctrl+Click fails because the affinity tab is full.
+        /// </summary>
+        public static bool CtrlShiftClick(Vector2 absPos)
+        {
+            if (TryCaptureReplay("CtrlShiftClick", absPos)) return true;
+            if (!CanAct) { LogAction("CtrlShiftClick", absPos, null, false); return false; }
+            if (!ClampToWindow(ref absPos)) { LogAction("CtrlShiftClick", absPos, null, false); return false; }
+            SuspendMovement();
+            ReleaseAllKeys();
+            var moveMs = EstimateMoveMs(absPos);
+            var settle = RandSettle();
+            var hold = RandHold();
+            NextActionAt = DateTime.Now.AddMilliseconds(hold + moveMs + settle + hold + ActionCooldownMs);
+            _ = DoCtrlShiftClick(absPos, settle, hold);
+            LogAction("CtrlShiftClick", absPos, null, true);
+            return true;
+        }
+
+        private static async Task DoCtrlShiftClick(Vector2 absPos, int settleMs, int holdMs)
+        {
+            await SendDelay();
+            SendKeyDown(Keys.ControlKey, "ctrl");
+            SendKeyDown(Keys.ShiftKey, "shift");
+            await Task.Delay(holdMs);
+            await MoveCursorTo(absPos);
+            await Task.Delay(settleMs);
+            await SendDelay();
+            SendLeftDown("ctrl-shift-click");
+            await Task.Delay(holdMs);
+            await SendDelay();
+            SendLeftUp("ctrl-shift-click");
+            await Task.Delay(holdMs);
+            await SendDelay();
+            SendKeyUp(Keys.ShiftKey, "shift");
+            SendKeyUp(Keys.ControlKey, "ctrl");
+        }
+
+        /// <summary>
         /// Left-click while a modifier key is already held (e.g. Ctrl held for batch stash transfers).
         /// Does NOT call ReleaseAllKeys — the caller is responsible for holding/releasing the modifier.
         /// Lighter than CtrlClick: skips Ctrl down/up per item, just moves cursor and clicks.

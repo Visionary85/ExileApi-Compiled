@@ -1,5 +1,6 @@
 using ExileCore;
 using ExileCore.PoEMemory.Components;
+using ExileCore.PoEMemory.Elements.InventoryElements;
 using ExileCore.PoEMemory.MemoryObjects;
 using ExileCore.Shared.Enums;
 using AutoExile.Systems;
@@ -62,6 +63,14 @@ namespace AutoExile.Modes
         // Set when stash times out mid-run; cleared on wave completion so the next
         // between-wave window gets a fresh attempt (inventory may have changed).
         private bool _stashBailed;
+        // Fallback stash: when compiled StashSystem fails (affinity tab full), we
+        // navigate to the dump tab and Ctrl+Shift+Click each remaining item directly.
+        private bool _stashFallbackActive;
+        private int _stashFallbackDumpTabIndex;
+        private List<Vector2>? _stashFallbackItems;
+        private int _stashFallbackItemIndex;
+        private DateTime _stashFallbackStartTime;
+        private const float StashFallbackTimeoutSeconds = 25f;
 
         // Wave transition tracking — tracks WavesCompleted so we reset exploration/timers
         // each time a wave actually finishes (not CurrentWave which stays at 15 in Mirage league).
@@ -145,6 +154,8 @@ namespace AutoExile.Modes
             _lastAreaName = "";
             _isStashing = false;
             _stashBailed = false;
+            _stashFallbackActive = false;
+            _stashFallbackItems = null;
             _lootTracker.Reset();
             _lastKnownWavesCompleted = 0;
             _wasSearching = false;
@@ -1427,20 +1438,29 @@ namespace AutoExile.Modes
 
         private void TickBetweenWaveStash(BotContext ctx, InteractionResult interactionResult)
         {
-            // If wave started while stashing, cancel and return to wave cycle
+            // If wave started while stashing, cancel everything and return to wave cycle
             if (_state.IsWaveActive)
             {
                 if (ctx.Stash.IsBusy)
                     ctx.Stash.Cancel(ctx.Game, ctx.Navigation);
                 _isStashing = false;
+                _stashFallbackActive = false;
+                _stashFallbackItems = null;
                 _phase = SimPhase.WaveCycle;
                 _phaseStartTime = DateTime.Now;
                 StatusText = "Wave started — cancelling stash";
                 return;
             }
 
-            // Timeout — if stash hasn't completed in 30s, bail and continue the run.
-            // _stashBailed blocks re-entry until the next wave completes (inventory may change).
+            // Dispatch to fallback when primary stash failed
+            if (_stashFallbackActive)
+            {
+                TickStashFallback(ctx);
+                return;
+            }
+
+            // Timeout on primary stash — bail and continue the run.
+            // _stashBailed blocks re-entry until the next wave completes.
             if ((DateTime.Now - _phaseStartTime).TotalSeconds > 30)
             {
                 if (ctx.Stash.IsBusy)
@@ -1501,12 +1521,145 @@ namespace AutoExile.Modes
                     StatusText = $"Stashed {ctx.Stash.ItemsStored} items — resuming wave cycle";
                     break;
                 case StashResult.Failed:
-                    StatusText = $"Stash failed ({ctx.Stash.Status}) — retrying";
+                    // Primary stash failed (e.g. affinity tab full). Start Ctrl+Shift+Click
+                    // fallback which navigates to the dump tab and force-deposits each item.
+                    if (ctx.Stash.IsBusy) ctx.Stash.Cancel(gc, ctx.Navigation);
+                    _stashFallbackActive = true;
+                    _stashFallbackDumpTabIndex = -1;
+                    _stashFallbackItems = null;
+                    _stashFallbackItemIndex = 0;
+                    _stashFallbackStartTime = DateTime.Now;
+                    WriteEvent("StashFallbackStart", $"Wave {_state.WavesCompleted + 1}", ctx.Stash.Status ?? "failed");
+                    StatusText = "Stash failed — trying Ctrl+Shift+Click dump fallback";
                     break;
                 default:
                     StatusText = $"Between-wave stash: {ctx.Stash.Status}";
                     break;
             }
+        }
+
+        // =================================================================
+        // Stash dump fallback — Ctrl+Shift+Click remaining items to dump tab
+        // when the compiled StashSystem fails (e.g. affinity tab full).
+        // =================================================================
+
+        private void TickStashFallback(BotContext ctx)
+        {
+            var gc = ctx.Game;
+
+            // Timeout
+            if ((DateTime.Now - _stashFallbackStartTime).TotalSeconds > StashFallbackTimeoutSeconds)
+            {
+                WriteEvent("StashFallbackFailed", $"Wave {_state.WavesCompleted + 1}", "timeout");
+                FinishStashFallback(bail: true);
+                StatusText = "Stash fallback timed out — skipping until next wave";
+                return;
+            }
+
+            // Stash panel must be open (the compiled StashSystem opened it; if it closed, give up)
+            var stashEl = gc.IngameState.IngameUi.StashElement;
+            if (stashEl?.IsVisible != true)
+            {
+                WriteEvent("StashFallbackFailed", $"Wave {_state.WavesCompleted + 1}", "panel-closed");
+                FinishStashFallback(bail: true);
+                StatusText = "Stash panel closed during fallback — skipping until next wave";
+                return;
+            }
+
+            // Step 1: Resolve the dump tab index once
+            if (_stashFallbackDumpTabIndex < 0)
+            {
+                var dumpTabName = ctx.Settings.Stash.DumpTabName.Value;
+                if (string.IsNullOrWhiteSpace(dumpTabName))
+                {
+                    WriteEvent("StashFallbackFailed", $"Wave {_state.WavesCompleted + 1}", "no-dump-tab-configured");
+                    FinishStashFallback(bail: true);
+                    StatusText = "No dump tab configured — skipping stash";
+                    return;
+                }
+                var allNames = stashEl.AllStashNames;
+                int idx = -1;
+                if (allNames != null)
+                    for (int i = 0; i < allNames.Count; i++)
+                        if (string.Equals(allNames[i], dumpTabName, StringComparison.OrdinalIgnoreCase))
+                        { idx = i; break; }
+                if (idx < 0)
+                {
+                    WriteEvent("StashFallbackFailed", $"Wave {_state.WavesCompleted + 1}", $"tab-not-found:{dumpTabName}");
+                    FinishStashFallback(bail: true);
+                    StatusText = $"Dump tab '{dumpTabName}' not found — skipping";
+                    return;
+                }
+                _stashFallbackDumpTabIndex = idx;
+            }
+
+            // Step 2: Navigate to dump tab via arrow keys (one press per tick)
+            var currentTab = stashEl.IndexVisibleStash;
+            if (currentTab != _stashFallbackDumpTabIndex)
+            {
+                if (!BotInput.CanAct) return;
+                var key = currentTab < _stashFallbackDumpTabIndex
+                    ? System.Windows.Forms.Keys.Right
+                    : System.Windows.Forms.Keys.Left;
+                BotInput.PressKey(key);
+                StatusText = $"Stash fallback: navigating tab {currentTab} → {_stashFallbackDumpTabIndex}";
+                return;
+            }
+
+            // Step 3: Build item list once (now that we're on the correct tab)
+            if (_stashFallbackItems == null)
+            {
+                _stashFallbackItems = new List<Vector2>();
+                var inv = gc.IngameState.IngameUi.InventoryPanel[InventoryIndex.PlayerInventory];
+                if (inv?.VisibleInventoryItems != null)
+                {
+                    var wr = gc.Window.GetWindowRectangle();
+                    foreach (var slot in inv.VisibleInventoryItems)
+                    {
+                        if (slot?.Item == null) continue;
+                        var baseType = gc.Files.BaseItemTypes.Translate(slot.Item.Path);
+                        if (baseType == null || !KeepSimulacrumsFilter(baseType)) continue;
+                        var r = slot.GetClientRect();
+                        _stashFallbackItems.Add(new Vector2(wr.X + r.X + r.Width / 2f,
+                                                            wr.Y + r.Y + r.Height / 2f));
+                    }
+                }
+                _stashFallbackItemIndex = 0;
+
+                if (_stashFallbackItems.Count == 0)
+                {
+                    WriteEvent("StashFallbackDone", $"Wave {_state.WavesCompleted + 1}", "nothing-to-dump");
+                    FinishStashFallback(bail: false);
+                    StatusText = "Stash fallback: nothing to dump — resuming";
+                    return;
+                }
+                WriteEvent("StashFallbackReady", $"Wave {_state.WavesCompleted + 1}", $"items={_stashFallbackItems.Count}");
+            }
+
+            // Step 4: Done — all items clicked
+            if (_stashFallbackItemIndex >= _stashFallbackItems.Count)
+            {
+                WriteEvent("StashFallbackDone", $"Wave {_state.WavesCompleted + 1}", $"dumped={_stashFallbackItems.Count}");
+                FinishStashFallback(bail: false);
+                StatusText = $"Stash fallback: dumped {_stashFallbackItems.Count} items — resuming";
+                return;
+            }
+
+            // Step 5: Ctrl+Shift+Click next item (one per tick, gated by BotInput.CanAct)
+            if (!BotInput.CanAct) return;
+            BotInput.CtrlShiftClick(_stashFallbackItems[_stashFallbackItemIndex]);
+            StatusText = $"Stash fallback: dumping {_stashFallbackItemIndex + 1}/{_stashFallbackItems.Count}";
+            _stashFallbackItemIndex++;
+        }
+
+        private void FinishStashFallback(bool bail)
+        {
+            _stashFallbackActive = false;
+            _stashFallbackItems = null;
+            _isStashing = false;
+            _stashBailed = bail;
+            _phase = SimPhase.WaveCycle;
+            _phaseStartTime = DateTime.Now;
         }
 
         // =================================================================
