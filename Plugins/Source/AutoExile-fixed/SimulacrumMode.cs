@@ -59,6 +59,9 @@ namespace AutoExile.Modes
 
         // Between-wave stash tracking
         private bool _isStashing;
+        // Set when stash times out mid-run; cleared on wave completion so the next
+        // between-wave window gets a fresh attempt (inventory may have changed).
+        private bool _stashBailed;
 
         // Wave transition tracking — tracks WavesCompleted so we reset exploration/timers
         // each time a wave actually finishes (not CurrentWave which stays at 15 in Mirage league).
@@ -141,6 +144,7 @@ namespace AutoExile.Modes
             _mapCompleted = false;
             _lastAreaName = "";
             _isStashing = false;
+            _stashBailed = false;
             _lootTracker.Reset();
             _lastKnownWavesCompleted = 0;
             _wasSearching = false;
@@ -681,6 +685,7 @@ namespace AutoExile.Modes
                 _waveStartLastClickTime = DateTime.MinValue;
                 _betweenWaveStartTime = DateTime.MinValue;
                 _lastMovementAt = DateTime.MinValue;
+                _stashBailed = false; // new wave — retry stash if inventory still needs it
             }
 
             // --- Priority 0: Don't interrupt active loot pickup ---
@@ -907,8 +912,8 @@ namespace AutoExile.Modes
                     foreach (var it in slots)
                         if (KeepSimulacrumsFilter(it)) stashableCount++;
 
-                bool shouldStartStashing    = stashableCount >= ctx.Settings.Run.StashItemThreshold.Value;
-                bool shouldContinueStashing = _isStashing && stashableCount > 0;
+                bool shouldStartStashing    = !_stashBailed && stashableCount >= ctx.Settings.Run.StashItemThreshold.Value;
+                bool shouldContinueStashing = !_stashBailed && _isStashing && stashableCount > 0;
 
                 if (shouldStartStashing || shouldContinueStashing)
                 {
@@ -1434,15 +1439,23 @@ namespace AutoExile.Modes
                 return;
             }
 
-            // Timeout
+            // Timeout — if stash hasn't completed in 30s, bail and continue the run.
+            // _stashBailed blocks re-entry until the next wave completes (inventory may change).
             if ((DateTime.Now - _phaseStartTime).TotalSeconds > 30)
             {
                 if (ctx.Stash.IsBusy)
                     ctx.Stash.Cancel(ctx.Game, ctx.Navigation);
                 _isStashing = false;
+                _stashBailed = true;
                 _phase = SimPhase.WaveCycle;
                 _phaseStartTime = DateTime.Now;
-                StatusText = "Stash timeout — resuming wave cycle";
+                int remaining = 0;
+                var bailSlots = StashSystem.GetInventorySlotItems(ctx.Game);
+                if (bailSlots != null)
+                    foreach (var it in bailSlots)
+                        if (KeepSimulacrumsFilter(it)) remaining++;
+                WriteEvent("StashBailed", $"Wave {_state.WavesCompleted + 1}", $"remaining={remaining}");
+                StatusText = "Stash timeout — skipping until next wave";
                 return;
             }
 
