@@ -1,6 +1,5 @@
 using ExileCore;
 using ExileCore.PoEMemory.Components;
-using ExileCore.PoEMemory.Elements.InventoryElements;
 using ExileCore.PoEMemory.MemoryObjects;
 using ExileCore.Shared.Enums;
 using AutoExile.Systems;
@@ -1639,8 +1638,10 @@ namespace AutoExile.Modes
                     foreach (var slot in inv.VisibleInventoryItems)
                     {
                         if (slot?.Item == null) continue;
-                        var baseType = gc.Files.BaseItemTypes.Translate(slot.Item.Path);
-                        if (baseType == null || !KeepSimulacrumsFilter(baseType)) continue;
+                        var path = slot.Item.Path;
+                        if (path == null) continue;
+                        // Skip simulacrums — same logic as KeepSimulacrumsFilter
+                        if (path.Contains(FullSimulacrumPath, StringComparison.OrdinalIgnoreCase)) continue;
                         var r = slot.GetClientRect();
                         _stashFallbackItems.Add(new Vector2(wr.X + r.X + r.Width / 2f,
                                                             wr.Y + r.Y + r.Height / 2f));
