@@ -975,9 +975,31 @@ namespace AutoExile.Modes
                 // No loot from current position — return to monolith before allowing wave start.
                 if (_state.MonolithPosition.HasValue)
                 {
-                    var distToMonolith = Vector2.Distance(gc.Player.GridPosNum, _state.MonolithPosition.Value);
+                    var distToMonolith = Vector2.Distance(playerPos, _state.MonolithPosition.Value);
                     if (distToMonolith > 30f)
                     {
+                        // Between-wave nav freeze detection. This block returns early so the
+                        // BetweenWaveTimeout (120s) never reaches here — a hard nav lock can last
+                        // indefinitely (observed: 87.5 min in logs). Mirror the wave-active
+                        // dead-zone unstick: if player hasn't moved in DeadZoneUnstickSeconds,
+                        // reset navigation back to the monolith.
+                        if (_lastMovementAt == DateTime.MinValue ||
+                            Vector2.Distance(playerPos, _lastMovementPos) > MovementThresholdGrid)
+                        {
+                            _lastMovementPos = playerPos;
+                            _lastMovementAt = DateTime.Now;
+                        }
+                        else if ((DateTime.Now - _lastMovementAt).TotalSeconds > DeadZoneUnstickSeconds)
+                        {
+                            _lastMovementAt = DateTime.Now;
+                            _lastMovementPos = playerPos;
+                            ctx.Navigation.Stop(gc);
+                            ctx.Navigation.NavigateTo(gc, _state.MonolithPosition.Value);
+                            WriteEvent("UnstickFired", $"Wave {_state.WavesCompleted + 1}", "between-wave-nav-freeze");
+                            Decision = "Between waves — nav freeze unstick";
+                            StatusText = "Between waves: navigation frozen — resetting path to monolith";
+                        }
+
                         IdleNearMonolith(ctx);
                         _state.ResetWaveDelay(_currentWaveDelay);
                         Decision = "Between waves — returning to monolith before wave start";
