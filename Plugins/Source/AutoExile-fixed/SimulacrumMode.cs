@@ -2,6 +2,7 @@ using ExileCore;
 using ExileCore.PoEMemory.Components;
 using ExileCore.PoEMemory.MemoryObjects;
 using ExileCore.Shared.Enums;
+using System.Diagnostics;
 using AutoExile.Systems;
 using AutoExile.Modes.Shared;
 using System.Numerics;
@@ -56,6 +57,11 @@ namespace AutoExile.Modes
 
         // Hideout flow
         private readonly HideoutFlow _hideoutFlow = new();
+
+        // Session duration limit — exit PoE after this many hours (0 = disabled).
+        // Edit this value to change how long the bot runs before exiting the game.
+        private const float SessionMaxHours = 5f;
+        private DateTime _sessionStartTime;
 
         // Between-wave stash tracking
         private bool _isStashing;
@@ -145,6 +151,7 @@ namespace AutoExile.Modes
 
         public void OnEnter(BotContext ctx)
         {
+            _sessionStartTime = DateTime.Now;
             _settings = ctx.Settings.Simulacrum;
             _currentWaveDelay = RandRange(
                 _settings.MinWaveDelaySeconds.Value,
@@ -549,6 +556,18 @@ namespace AutoExile.Modes
 
         private void StartHideoutFlow(BotContext ctx)
         {
+            // Exit PoE when the session duration limit is reached. The check runs here
+            // so the current run always finishes cleanly before the game closes.
+            if (SessionMaxHours > 0 &&
+                (DateTime.Now - _sessionStartTime).TotalHours >= SessionMaxHours)
+            {
+                var elapsed = (DateTime.Now - _sessionStartTime).TotalHours;
+                WriteEvent("SessionEnd", $"elapsed={elapsed:F2}h limit={SessionMaxHours}h", "exiting-game");
+                StatusText = $"Session limit reached ({elapsed:F2}h) — closing game";
+                ctx.Game.Process?.Kill();
+                return;
+            }
+
             var stash = ctx.Settings.Stash;
             var sim   = ctx.Settings.Simulacrum;
 
