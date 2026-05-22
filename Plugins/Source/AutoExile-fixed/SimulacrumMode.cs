@@ -564,7 +564,9 @@ namespace AutoExile.Modes
                 var elapsed = (DateTime.Now - _sessionStartTime).TotalHours;
                 WriteEvent("SessionEnd", $"elapsed={elapsed:F2}h limit={SessionMaxHours}h", "exiting-game");
                 StatusText = $"Session limit reached ({elapsed:F2}h) — closing game";
-                ctx.Game.Process?.Kill();
+                foreach (var name in new[] { "PathOfExile_x64", "PathOfExile", "PathOfExileSteam" })
+                    foreach (var proc in Process.GetProcessesByName(name))
+                        proc.Kill();
                 return;
             }
 
