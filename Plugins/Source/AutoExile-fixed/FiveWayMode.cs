@@ -106,8 +106,9 @@ namespace AutoExile.Modes
         private int _resetCount;                                    // number of complete Dash→SC cycles
 
         // Cached screen-space position of the monolith stone centre.
-        // Both Dash and Shield Charge are cursor-directed at this point so the character
-        // charges through the stone and oscillates across the ring boundary each cycle.
+        // Cursor stays fixed here: Shield Charge moves TOWARD cursor (stone is solid, stops the
+        // charge — character ends up AT the stone, inside the ring); Dash moves BACKWARD away
+        // from cursor (exits the ring). This oscillation across the boundary triggers resets.
         // Calculated once when the reset loop starts and reused every tick.
         private Vector2 _monolithScreenPos;
 
