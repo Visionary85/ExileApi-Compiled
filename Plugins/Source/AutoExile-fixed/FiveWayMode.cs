@@ -1,4 +1,5 @@
 using ExileCore;
+using ExileCore.PoEMemory.Components;
 using ExileCore.PoEMemory.MemoryObjects;
 using ExileCore.Shared.Enums;
 using AutoExile.Modes.Shared;
@@ -108,6 +109,12 @@ namespace AutoExile.Modes
         private int _runsCompleted;
         private DateTime _sessionStart = DateTime.MinValue;
 
+        // Kill tracking — same pattern as the KillCounter plugin:
+        // scan dead hostile monsters each tick, use entity ID to avoid double-counting.
+        private readonly HashSet<uint> _countedKills = new();
+        private int _killCount;             // kills this encounter
+        private int _sessionKillCount;      // kills this session (across all runs)
+
         // Logging — two files per session:
         //   fiveway_events_*.csv  : named events (phase transitions, skill fires, portal clicks, etc.)
         //   fiveway_state_*.csv   : 500ms position/state snapshots for timeline analysis
@@ -147,6 +154,9 @@ namespace AutoExile.Modes
             _warmupDelay = 0;
             _resetCount = 0;
             _leaderLastSeenAt = DateTime.MinValue;
+            _countedKills.Clear();
+            _killCount = 0;
+            _sessionKillCount = 0;
 
             _lastStateSnap = DateTime.MinValue;
             _lastLoggedPos = Vector2.Zero;
@@ -195,10 +205,23 @@ namespace AutoExile.Modes
 
                 var encElapsed = _encounterStartTime == DateTime.MinValue
                     ? 0 : (DateTime.Now - _encounterStartTime).TotalSeconds;
-                WriteEvent("AreaChange", "BackInHideout",
-                    $"runs={_runsCompleted},resets={_resetCount},encElapsed={encElapsed:F0}s");
+
+                // Theoretical max resets = encounter duration / Dash cooldown
+                var theoreticalMax = encElapsed > 0
+                    ? (int)(encElapsed / (DashCooldownMs / 1000f)) : 0;
+                var efficiency = theoreticalMax > 0
+                    ? (float)_resetCount / theoreticalMax * 100f : 0f;
+
+                _sessionKillCount += _killCount;
+                WriteEvent("RunSummary", "BackInHideout",
+                    $"kills={_killCount},resets={_resetCount},maxResets={theoreticalMax}," +
+                    $"efficiency={efficiency:F1}%,encElapsed={encElapsed:F0}s," +
+                    $"sessionKills={_sessionKillCount},runs={_runsCompleted}");
 
                 _resetCount = 0;
+                _killCount = 0;
+                _countedKills.Clear();
+                _encounterStartTime = DateTime.MinValue;
                 _phase = FiveWayPhase.WaitingInHideout;
                 _phaseStartTime = DateTime.Now;
                 StatusText = "Returned to hideout — waiting for next run";
@@ -241,25 +264,35 @@ namespace AutoExile.Modes
             g.DrawText(StatusText, new Vector2(OverlayX, y), SharpDX.Color.LightGreen);
             y += lh;
 
-            if (_phase == FiveWayPhase.Resetting)
+            if (_phase == FiveWayPhase.Resetting || _phase == FiveWayPhase.EncounterEnded)
             {
-                var elapsed = (DateTime.Now - _encounterStartTime).TotalSeconds;
+                var elapsed = _encounterStartTime == DateTime.MinValue
+                    ? 0 : (DateTime.Now - _encounterStartTime).TotalSeconds;
                 var remaining = Math.Max(0, EncounterDurationSeconds - elapsed);
-                g.DrawText($"Resets: {_resetCount}  Timer: {remaining:F0}s remaining",
+                var theoreticalMax = elapsed > 0 ? (int)(elapsed / (DashCooldownMs / 1000f)) : 0;
+                var efficiency = theoreticalMax > 0
+                    ? (float)_resetCount / theoreticalMax * 100f : 0f;
+
+                g.DrawText(
+                    $"Kills: {_killCount}  Resets: {_resetCount}/{theoreticalMax} ({efficiency:F0}%)  {remaining:F0}s left",
                     new Vector2(OverlayX, y), SharpDX.Color.Cyan);
                 y += lh;
 
-                var dashIn = Math.Max(0, (_nextDashAt - DateTime.Now).TotalMilliseconds);
-                g.DrawText(_pendingShieldCharge
-                        ? $"Next: Shield Charge (in {(_shieldChargeAt - DateTime.Now).TotalMilliseconds:F0}ms)"
-                        : $"Next: Dash (in {dashIn:F0}ms)",
-                    new Vector2(OverlayX, y), SharpDX.Color.Yellow);
-                y += lh;
+                if (_phase == FiveWayPhase.Resetting)
+                {
+                    var dashIn = _nextDashAt == DateTime.MinValue
+                        ? 0 : Math.Max(0, (_nextDashAt - DateTime.Now).TotalMilliseconds);
+                    g.DrawText(_pendingShieldCharge
+                            ? $"Next: Shield Charge (in {Math.Max(0, (_shieldChargeAt - DateTime.Now).TotalMilliseconds):F0}ms)"
+                            : $"Next: Dash (in {dashIn:F0}ms)",
+                        new Vector2(OverlayX, y), SharpDX.Color.Yellow);
+                    y += lh;
+                }
             }
 
             if (_runsCompleted > 0)
             {
-                g.DrawText($"Completed runs: {_runsCompleted}",
+                g.DrawText($"Runs: {_runsCompleted}  Session kills: {_sessionKillCount}",
                     new Vector2(OverlayX, y), SharpDX.Color.Gold);
             }
         }
@@ -521,11 +554,15 @@ namespace AutoExile.Modes
 
             if (elapsed >= EncounterDurationSeconds)
             {
+                var theoreticalMax = (int)(elapsed / (DashCooldownMs / 1000f));
+                var efficiency = theoreticalMax > 0
+                    ? (float)_resetCount / theoreticalMax * 100f : 0f;
                 WriteEvent("ResetEnd", "TimerExpired",
-                    $"resets={_resetCount},elapsed={elapsed:F0}s");
+                    $"kills={_killCount},resets={_resetCount},maxResets={theoreticalMax}," +
+                    $"efficiency={efficiency:F1}%,elapsed={elapsed:F0}s");
                 _phase = FiveWayPhase.EncounterEnded;
                 _phaseStartTime = DateTime.Now;
-                StatusText = "Encounter over — carry is looting";
+                StatusText = $"Encounter over — {_killCount} kills / {_resetCount} resets ({efficiency:F0}% efficiency)";
                 return;
             }
 
@@ -678,6 +715,7 @@ namespace AutoExile.Modes
                     "DistToMonolith,InRing," +
                     "ResetCount,PendingShieldCharge,NextDashMs," +
                     "EncElapsedSec,EncRemainingSec," +
+                    "KillCount,KillsPerReset," +
                     "Navigating,NavDestX,NavDestY," +
                     "HasLeader,LeaderX,LeaderY");
             }
@@ -735,6 +773,18 @@ namespace AutoExile.Modes
                 var leaderX = _hasLastLeaderPos ? _lastLeaderPos.X : -1f;
                 var leaderY = _hasLastLeaderPos ? _lastLeaderPos.Y : -1f;
 
+                // Count newly-dead hostile monsters since last snap (same logic as KillCounter plugin)
+                foreach (var e in gc.EntityListWrapper.ValidEntitiesByType[EntityType.Monster])
+                {
+                    if (e.IsAlive || !e.IsHostile) continue;
+                    if (!e.HasComponent<ObjectMagicProperties>()) continue;
+                    if (_countedKills.Add(e.Id))
+                        _killCount++;
+                }
+
+                var killsPerReset = _resetCount > 0
+                    ? (float)_killCount / _resetCount : 0f;
+
                 var ms = (long)(DateTime.Now - _sessionStart).TotalMilliseconds;
                 var safeStatus = StatusText.Replace(',', ';');
 
@@ -744,6 +794,7 @@ namespace AutoExile.Modes
                     $"{distToMono:F1},{inRing}," +
                     $"{_resetCount},{(_pendingShieldCharge ? 1 : 0)},{nextDashMs:F0}," +
                     $"{encElapsed:F1},{encRemaining:F1}," +
+                    $"{_killCount},{killsPerReset:F1}," +
                     $"{navigating},{navDest.X:F1},{navDest.Y:F1}," +
                     $"{(_hasLastLeaderPos ? 1 : 0)},{leaderX:F1},{leaderY:F1}");
 
