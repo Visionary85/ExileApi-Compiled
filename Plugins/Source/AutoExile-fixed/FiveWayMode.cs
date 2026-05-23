@@ -12,12 +12,17 @@ namespace AutoExile.Modes
     /// <summary>
     /// 5-Way Domain of Timeless Conflict resetter.
     ///
-    /// The bot follows the leader into the Domain, walks to the central monolith,
-    /// waits a short delay, then alternates Shield Charge and Dash at their
-    /// cooldown interval to continuously reset monster spawns for the carry team.
-    /// Both skills must have "Always Attack Without Moving" checked in-game.
+    /// Mechanic: monsters spawn when a player leaves the ring, re-enters it,
+    /// then stays inside for 2 seconds. Dash (W) exits the ring; Shield Charge (Q)
+    /// re-enters it instantly. Dash cooldown ~2.21s is the ideal wait time —
+    /// perfectly matching the 2s spawn timer with room to spare.
     ///
-    /// Configuration: edit the constants below to match your character's key bindings.
+    /// Cycle: Dash OUT → (150ms) → Shield Charge IN → (wait Dash cooldown) → repeat.
+    ///
+    /// Both skills must have "Always Attack Without Moving" ticked in-game.
+    /// Shield Charge has no cooldown so it fires immediately every cycle.
+    ///
+    /// Configuration: edit the constants below to match your key bindings.
     /// </summary>
     public class FiveWayMode : IBotMode
     {
@@ -26,31 +31,51 @@ namespace AutoExile.Modes
         // ──────────────────────────────────────────────────────────────────────
         // CONFIGURATION — edit these to match your key bindings
         // ──────────────────────────────────────────────────────────────────────
-        // Key bound to Shield Charge (the "slam" skill)
+        // Q = Shield Charge (no cooldown — fires instantly after each Dash)
         private const Keys ShieldChargeKey = Keys.Q;
-        // Key bound to Dash (the held/toggle skill)
+        // W = Dash (cooldown skill — drives the reset timing)
         private const Keys DashKey = Keys.W;
 
-        // Skill cooldown in ms — 2.21s matches 20% quality lvl-4 Dash / Shield Charge
-        private const float ResetIntervalMs = 2210f;
-        // Random warmup window after reaching the monolith before pressing anything
+        // Dash cooldown in ms — set by gem level/quality. 2.21s = 20% quality target.
+        // Shield Charge has no cooldown so only DashCooldownMs matters for timing.
+        private const float DashCooldownMs = 2210f;
+
+        // Delay between pressing Dash and pressing Shield Charge.
+        // Gives Dash time to begin its animation so the exit micro-movement registers
+        // before Shield Charge's enter micro-movement fires.
+        private const float ShieldChargeDelayAfterDashMs = 200f;
+
+        // Random warmup window after reaching the monolith ring edge before pressing anything.
+        // Lets the carry trigger the first wave cleanly before resets begin.
         private const float WarmupMinSeconds = 7f;
         private const float WarmupMaxSeconds = 10f;
-        // Total encounter duration (base 15s + 1 min per emblem × 5 = ~315s; use 305 to stop a bit early)
+
+        // Total encounter duration in seconds.
+        // Base 15s + 1 min per emblem. With 5 emblems = ~315s. Stop a few seconds early
+        // so the last reset completes cleanly before the encounter ends.
         private const float EncounterDurationSeconds = 305f;
-        // Grid distance at which we consider ourselves "at" the monolith
+
+        // Grid distance at which the bot stops and considers itself positioned at the ring edge.
+        // The ring in Domain of Timeless Conflict is ~20-22 grid units radius.
+        // Arriving at 18 units puts the bot just inside the ring boundary — ideal for Dash-exit.
         private const float MonolithArrivalDist = 18f;
-        // Grid distance at which we stop following the leader in hideout
+
+        // Grid distance at which we stop following the leader while in the hideout.
         private const float FollowStopDist = 12f;
-        // Grid radius around leader's last known position to search for the entry portal
+
+        // Grid radius around leader's last known position to search for the entry portal.
         private const float PortalSearchRadius = 70f;
-        // How long to wait for the leader to reappear / portal to show before resetting tracking
+
+        // How long to wait for the leader / portal to appear before resetting tracking.
         private const float PortalWaitTimeout = 45f;
-        // Seconds to let entity list settle after zone load before acting
+
+        // Seconds to let entity list settle after zone load before acting.
         private const float AreaSettleSeconds = 2.5f;
-        // Seconds before giving up on monolith search and resetting from current position
+
+        // Seconds before giving up on monolith search and resetting from current position.
         private const float FindMonolithTimeout = 25f;
-        // Overlay position
+
+        // Overlay position on screen.
         private const float OverlayX = 20f;
         private const float OverlayY = 100f;
 
@@ -61,39 +86,38 @@ namespace AutoExile.Modes
         private DateTime _phaseStartTime = DateTime.MinValue;
         public string StatusText { get; private set; } = "";
 
-        // Leader tracking (for portal-follow in hideout and monolith-find in domain)
+        // Leader tracking — hideout following and in-domain monolith navigation
         private Vector2 _lastLeaderPos;
         private bool _hasLastLeaderPos;
         private DateTime _leaderLastSeenAt = DateTime.MinValue;
 
-        // Monolith target in domain
+        // Monolith ring centre position (grid coords)
         private Vector2? _monolithPos;
         private uint? _monolithId;
 
-        // Reset loop
-        private bool _useShieldChargeNext = true;  // alternates between the two skills
-        private DateTime _nextShieldChargeAt = DateTime.MinValue;
-        private DateTime _nextDashAt = DateTime.MinValue;
+        // Reset loop timing
+        // Pattern: Dash (exit ring) → short gap → Shield Charge (re-enter ring) → wait dash CD → repeat
+        private DateTime _nextDashAt = DateTime.MinValue;           // when to fire Dash next
+        private DateTime _shieldChargeAt = DateTime.MinValue;       // when to fire Shield Charge after Dash
+        private bool _pendingShieldCharge;                          // true = Dash fired, waiting to Shield Charge
         private DateTime _encounterStartTime = DateTime.MinValue;
         private float _warmupDelay;
-        private int _resetCount;
+        private int _resetCount;                                    // number of complete Dash→SC cycles
 
-        // Run stats
+        // Stats
         private int _runsCompleted;
         private DateTime _sessionStart = DateTime.MinValue;
 
         // Logging
         private StreamWriter? _log;
 
-        // Metadata substrings to search for the central monolith entity in the Domain.
-        // Multiple patterns because GGG naming isn't consistent across patches.
+        // Metadata substrings to identify the central monolith entity in the Domain.
         private static readonly string[] MonolithMetaPaths =
         {
             "LegionMonolith",
             "TimelessConflict",
             "Legion/Monolith",
             "LegionStone",
-            "Afflictionator",   // fallback: simulacrum monolith uses same base type in some builds
         };
 
         private static readonly Random _rng = new();
@@ -110,9 +134,9 @@ namespace AutoExile.Modes
             _hasLastLeaderPos = false;
             _monolithPos = null;
             _monolithId = null;
-            _useShieldChargeNext = true;
-            _nextShieldChargeAt = DateTime.MinValue;
             _nextDashAt = DateTime.MinValue;
+            _shieldChargeAt = DateTime.MinValue;
+            _pendingShieldCharge = false;
             _encounterStartTime = DateTime.MinValue;
             _warmupDelay = 0;
             _resetCount = 0;
@@ -148,7 +172,7 @@ namespace AutoExile.Modes
         {
             var gc = ctx.Game;
 
-            // Any return to hideout/town from a map phase resets us cleanly
+            // Return to hideout from any map phase → clean reset for next run
             if ((gc.Area.CurrentArea.IsHideout || gc.Area.CurrentArea.IsTown) &&
                 _phase != FiveWayPhase.WaitingInHideout &&
                 _phase != FiveWayPhase.Idle)
@@ -160,39 +184,30 @@ namespace AutoExile.Modes
                 if (_phase == FiveWayPhase.Resetting || _phase == FiveWayPhase.EncounterEnded)
                     _runsCompleted++;
 
-                WriteEvent("AreaChange", "BackInHideout", $"phase={_phase},runs={_runsCompleted}");
+                WriteEvent("AreaChange", "BackInHideout",
+                    $"phase={_phase},resets={_resetCount},runs={_runsCompleted}");
+
+                _resetCount = 0;
                 _phase = FiveWayPhase.WaitingInHideout;
                 _phaseStartTime = DateTime.Now;
                 StatusText = "Returned to hideout — waiting for next run";
                 return;
             }
 
-            // Suppress combat movement and targeted skills during reset phases —
-            // we don't want the character chasing monsters and leaving the monolith.
+            // Suppress combat movement and targeted skills in the Domain so the bot
+            // stays planted at the ring edge and doesn't chase monsters.
             bool inDomain = IsInDomain(gc);
             ctx.Combat.SuppressPositioning = inDomain;
             ctx.Combat.SuppressTargetedSkills = inDomain;
 
             switch (_phase)
             {
-                case FiveWayPhase.WaitingInHideout:
-                    TickWaitingInHideout(ctx);
-                    break;
-                case FiveWayPhase.FindMonolith:
-                    TickFindMonolith(ctx);
-                    break;
-                case FiveWayPhase.NavigatingToMonolith:
-                    TickNavigatingToMonolith(ctx);
-                    break;
-                case FiveWayPhase.WarmupDelay:
-                    TickWarmupDelay(ctx);
-                    break;
-                case FiveWayPhase.Resetting:
-                    TickResetting(ctx);
-                    break;
-                case FiveWayPhase.EncounterEnded:
-                    TickEncounterEnded(ctx);
-                    break;
+                case FiveWayPhase.WaitingInHideout:    TickWaitingInHideout(ctx);    break;
+                case FiveWayPhase.FindMonolith:        TickFindMonolith(ctx);        break;
+                case FiveWayPhase.NavigatingToMonolith:TickNavigatingToMonolith(ctx);break;
+                case FiveWayPhase.WarmupDelay:         TickWarmupDelay(ctx);         break;
+                case FiveWayPhase.Resetting:           TickResetting(ctx);           break;
+                case FiveWayPhase.EncounterEnded:      TickEncounterEnded(ctx);      break;
             }
         }
 
@@ -212,27 +227,34 @@ namespace AutoExile.Modes
             {
                 var elapsed = (DateTime.Now - _encounterStartTime).TotalSeconds;
                 var remaining = Math.Max(0, EncounterDurationSeconds - elapsed);
-                g.DrawText($"Resets: {_resetCount}  Timer: {remaining:F0}s",
+                g.DrawText($"Resets: {_resetCount}  Timer: {remaining:F0}s remaining",
                     new Vector2(OverlayX, y), SharpDX.Color.Cyan);
+                y += lh;
+
+                var dashIn = Math.Max(0, (_nextDashAt - DateTime.Now).TotalMilliseconds);
+                g.DrawText(_pendingShieldCharge
+                        ? $"Next: Shield Charge (in {(_shieldChargeAt - DateTime.Now).TotalMilliseconds:F0}ms)"
+                        : $"Next: Dash (in {dashIn:F0}ms)",
+                    new Vector2(OverlayX, y), SharpDX.Color.Yellow);
                 y += lh;
             }
 
             if (_runsCompleted > 0)
             {
-                g.DrawText($"Runs completed: {_runsCompleted}",
+                g.DrawText($"Completed runs: {_runsCompleted}",
                     new Vector2(OverlayX, y), SharpDX.Color.Gold);
             }
         }
 
         // ──────────────────────────────────────────────────────────────────────
-        // Phase handlers
+        // Phase: WaitingInHideout
+        // Follow leader → enter portal when it appears near their last position.
         // ──────────────────────────────────────────────────────────────────────
 
         private void TickWaitingInHideout(BotContext ctx)
         {
             var gc = ctx.Game;
             var leaderName = ctx.Settings.Follower.LeaderName?.Value ?? "";
-
             var leader = FindLeader(gc, leaderName);
 
             if (leader != null)
@@ -245,7 +267,6 @@ namespace AutoExile.Modes
                 var playerGrid = new Vector2(gc.Player.GridPosNum.X, gc.Player.GridPosNum.Y);
                 var dist = Vector2.Distance(playerGrid, leaderGrid);
 
-                // Follow the leader
                 if (dist > FollowStopDist + 8f)
                 {
                     if (!ctx.Navigation.IsNavigating)
@@ -256,7 +277,7 @@ namespace AutoExile.Modes
 
                 ctx.Navigation.Stop(gc);
 
-                // Close enough to leader — watch for a portal to appear near them
+                // Close enough — check if a portal just appeared near the leader
                 var portal = FindNearestPortal(gc, leaderGrid, PortalSearchRadius);
                 if (portal != null)
                 {
@@ -268,7 +289,7 @@ namespace AutoExile.Modes
             }
             else if (_hasLastLeaderPos)
             {
-                // Leader disappeared — they likely entered the portal already
+                // Leader vanished — they entered the portal; find it and follow
                 var timeSinceSeen = (DateTime.Now - _leaderLastSeenAt).TotalSeconds;
 
                 if (timeSinceSeen > 1.5)
@@ -278,13 +299,11 @@ namespace AutoExile.Modes
                     {
                         var playerGrid = new Vector2(gc.Player.GridPosNum.X, gc.Player.GridPosNum.Y);
                         var portalGrid = new Vector2(portal.GridPosNum.X, portal.GridPosNum.Y);
-                        var distToPortal = Vector2.Distance(playerGrid, portalGrid);
-
-                        if (distToPortal > 10f)
+                        if (Vector2.Distance(playerGrid, portalGrid) > 10f)
                         {
                             if (!ctx.Navigation.IsNavigating)
                                 ctx.Navigation.NavigateTo(gc, portalGrid);
-                            StatusText = $"Moving to portal (dist: {distToPortal:F0})";
+                            StatusText = $"Moving to portal (dist: {Vector2.Distance(playerGrid, portalGrid):F0})";
                         }
                         else
                         {
@@ -311,10 +330,15 @@ namespace AutoExile.Modes
             else
             {
                 StatusText = string.IsNullOrEmpty(leaderName)
-                    ? "Set LeaderName in Follower settings to follow into Domain"
+                    ? "Set LeaderName in Follower settings"
                     : $"Waiting for leader '{leaderName}'...";
             }
         }
+
+        // ──────────────────────────────────────────────────────────────────────
+        // Phase: FindMonolith
+        // Search for the central stone entity; fall back to following leader.
+        // ──────────────────────────────────────────────────────────────────────
 
         private void TickFindMonolith(BotContext ctx)
         {
@@ -323,29 +347,27 @@ namespace AutoExile.Modes
 
             if (elapsed < AreaSettleSeconds)
             {
-                StatusText = "Zone loaded — settling...";
+                StatusText = "Zone loading — settling...";
                 return;
             }
 
-            // Already have position from a previous tick?
             if (_monolithPos.HasValue)
             {
-                TransitionToNavMonolith(ctx);
+                TransitionToNav(ctx);
                 return;
             }
 
-            // Search entity list for the central monolith stone
             var monolith = FindMonolithEntity(gc);
             if (monolith != null)
             {
                 _monolithId = monolith.Id;
                 _monolithPos = new Vector2(monolith.GridPosNum.X, monolith.GridPosNum.Y);
                 WriteEvent("MonolithFound", monolith.Metadata ?? "?", "entity");
-                TransitionToNavMonolith(ctx);
+                TransitionToNav(ctx);
                 return;
             }
 
-            // Fall back to leader position — in 5-ways the carry runs straight to the stone
+            // No entity found yet — follow leader (they head straight to the stone)
             var leaderName = ctx.Settings.Follower.LeaderName?.Value ?? "";
             var leader = FindLeader(gc, leaderName);
             if (leader != null)
@@ -360,10 +382,9 @@ namespace AutoExile.Modes
 
                 if (dist <= MonolithArrivalDist)
                 {
-                    // Close enough — use leader position as monolith centre
                     _monolithPos = leaderGrid;
                     WriteEvent("MonolithApprox", "LeaderPos", $"dist={dist:F0}");
-                    TransitionToNavMonolith(ctx);
+                    TransitionToNav(ctx);
                     return;
                 }
 
@@ -373,7 +394,7 @@ namespace AutoExile.Modes
                 return;
             }
 
-            // No entity, no leader — explore toward the centre
+            // No entity, no leader — explore toward centre
             if (ctx.Exploration.IsInitialized && !ctx.Navigation.IsNavigating)
             {
                 var target = ctx.Exploration.GetNextExplorationTarget(gc.Player.GridPosNum);
@@ -383,15 +404,19 @@ namespace AutoExile.Modes
 
             StatusText = "Searching for monolith...";
 
-            // Hard timeout: start from wherever we are
             if (elapsed > FindMonolithTimeout)
             {
-                var pGrid = gc.Player.GridPosNum;
-                _monolithPos = new Vector2(pGrid.X, pGrid.Y);
+                var p = gc.Player.GridPosNum;
+                _monolithPos = new Vector2(p.X, p.Y);
                 WriteEvent("MonolithFallback", "Timeout", $"elapsed={elapsed:F0}s");
-                TransitionToNavMonolith(ctx);
+                TransitionToNav(ctx);
             }
         }
+
+        // ──────────────────────────────────────────────────────────────────────
+        // Phase: NavigatingToMonolith
+        // Walk to the ring edge (MonolithArrivalDist from centre).
+        // ──────────────────────────────────────────────────────────────────────
 
         private void TickNavigatingToMonolith(BotContext ctx)
         {
@@ -410,10 +435,10 @@ namespace AutoExile.Modes
             {
                 ctx.Navigation.Stop(gc);
                 _warmupDelay = RandRange(WarmupMinSeconds, WarmupMaxSeconds);
-                WriteEvent("AtMonolith", $"dist={dist:F0}", $"warmup={_warmupDelay:F1}s");
+                WriteEvent("AtRingEdge", $"dist={dist:F0}", $"warmup={_warmupDelay:F1}s");
                 _phase = FiveWayPhase.WarmupDelay;
                 _phaseStartTime = DateTime.Now;
-                StatusText = $"At monolith — waiting {_warmupDelay:F0}s before resetting";
+                StatusText = $"At ring edge — waiting {_warmupDelay:F0}s before resetting";
                 return;
             }
 
@@ -422,7 +447,6 @@ namespace AutoExile.Modes
                 if (!ctx.Navigation.NavigateTo(gc, _monolithPos.Value))
                 {
                     WriteEvent("NavFailed", "ToMonolith", $"dist={dist:F0}");
-                    // Navigation couldn't find a path — start from here anyway
                     _warmupDelay = RandRange(WarmupMinSeconds, WarmupMaxSeconds);
                     _phase = FiveWayPhase.WarmupDelay;
                     _phaseStartTime = DateTime.Now;
@@ -430,89 +454,119 @@ namespace AutoExile.Modes
                 }
             }
 
-            StatusText = $"Navigating to monolith (dist: {dist:F0})";
+            StatusText = $"Navigating to ring edge (dist: {dist:F0})";
         }
+
+        // ──────────────────────────────────────────────────────────────────────
+        // Phase: WarmupDelay
+        // Hold position for 7-10s to let the carry trigger the first wave.
+        // ──────────────────────────────────────────────────────────────────────
 
         private void TickWarmupDelay(BotContext ctx)
         {
             ctx.Navigation.Stop(ctx.Game);
-
             var elapsed = (DateTime.Now - _phaseStartTime).TotalSeconds;
+
             if (elapsed >= _warmupDelay)
             {
-                // Stagger the two skills: Shield Charge fires immediately, Dash fires after half a cooldown
-                _nextShieldChargeAt = DateTime.Now;
-                _nextDashAt = DateTime.Now.AddMilliseconds(ResetIntervalMs / 2f);
+                // Begin with a Dash immediately — starts the exit cycle
+                _nextDashAt = DateTime.Now;
+                _pendingShieldCharge = false;
                 _resetCount = 0;
                 _encounterStartTime = DateTime.Now;
                 WriteEvent("ResetStart", "WarmupDone", $"delay={elapsed:F1}s");
                 _phase = FiveWayPhase.Resetting;
                 _phaseStartTime = DateTime.Now;
-                StatusText = "Starting reset loop";
+                StatusText = "Starting reset loop — Dash→ShieldCharge cycles";
             }
             else
             {
-                StatusText = $"Waiting {_warmupDelay - elapsed:F1}s before resetting...";
+                StatusText = $"Holding position — reset starts in {_warmupDelay - elapsed:F1}s";
             }
         }
 
+        // ──────────────────────────────────────────────────────────────────────
+        // Phase: Resetting
+        //
+        // Core loop:
+        //   1. Press Dash (W) — exits the ring via micro-movement
+        //   2. After ShieldChargeDelayAfterDashMs, press Shield Charge (Q) — re-enters ring
+        //   3. Wait DashCooldownMs from last Dash before repeating
+        //
+        // The ~2.21s Dash cooldown satisfies the 2-second in-ring stay requirement.
+        // Shield Charge has no cooldown so it fires as fast as BotInput allows.
+        // ──────────────────────────────────────────────────────────────────────
+
         private void TickResetting(BotContext ctx)
         {
-            var elapsedSec = (DateTime.Now - _encounterStartTime).TotalSeconds;
+            var elapsed = (DateTime.Now - _encounterStartTime).TotalSeconds;
 
-            if (elapsedSec >= EncounterDurationSeconds)
+            if (elapsed >= EncounterDurationSeconds)
             {
-                WriteEvent("ResetEnd", "TimerExpired", $"resets={_resetCount},elapsed={elapsedSec:F0}s");
+                WriteEvent("ResetEnd", "TimerExpired",
+                    $"resets={_resetCount},elapsed={elapsed:F0}s");
                 _phase = FiveWayPhase.EncounterEnded;
                 _phaseStartTime = DateTime.Now;
-                StatusText = "Encounter over — waiting for carry to loot and leave";
+                StatusText = "Encounter over — carry is looting";
                 return;
             }
 
-            var remaining = EncounterDurationSeconds - elapsedSec;
+            var remaining = EncounterDurationSeconds - elapsed;
             StatusText = $"Resetting: {_resetCount} resets — {remaining:F0}s left";
 
             if (!BotInput.CanAct) return;
 
             var now = DateTime.Now;
 
-            // Fire Shield Charge when its cooldown is up
-            if (now >= _nextShieldChargeAt)
+            if (_pendingShieldCharge)
             {
-                if (BotInput.PressKey(ShieldChargeKey))
+                // Fire Shield Charge as soon as the short post-Dash gap has elapsed
+                if (now >= _shieldChargeAt)
                 {
-                    _nextShieldChargeAt = now.AddMilliseconds(ResetIntervalMs);
-                    _resetCount++;
+                    if (BotInput.PressKey(ShieldChargeKey))
+                    {
+                        _pendingShieldCharge = false;
+                        _resetCount++;
+                    }
                 }
             }
-            // Fire Dash when its cooldown is up (offset from Shield Charge by half-interval at startup)
-            else if (now >= _nextDashAt)
+            else
             {
-                if (BotInput.PressKey(DashKey))
+                // Fire Dash when cooldown is ready
+                if (now >= _nextDashAt)
                 {
-                    _nextDashAt = now.AddMilliseconds(ResetIntervalMs);
+                    if (BotInput.PressKey(DashKey))
+                    {
+                        _nextDashAt = now.AddMilliseconds(DashCooldownMs);
+                        _shieldChargeAt = now.AddMilliseconds(ShieldChargeDelayAfterDashMs);
+                        _pendingShieldCharge = true;
+                    }
                 }
             }
         }
 
+        // ──────────────────────────────────────────────────────────────────────
+        // Phase: EncounterEnded
+        // Hold position until the area transition carries everyone back to hideout.
+        // ──────────────────────────────────────────────────────────────────────
+
         private void TickEncounterEnded(BotContext ctx)
         {
-            // Just hold position — area transition back to hideout will trigger OnAreaChanged
             ctx.Navigation.Stop(ctx.Game);
             var elapsed = (DateTime.Now - _phaseStartTime).TotalSeconds;
-            StatusText = $"Encounter ended — waiting for party to exit ({elapsed:F0}s)";
+            StatusText = $"Waiting for party to loot and exit ({elapsed:F0}s)";
         }
 
         // ──────────────────────────────────────────────────────────────────────
         // Helpers
         // ──────────────────────────────────────────────────────────────────────
 
-        private void TransitionToNavMonolith(BotContext ctx)
+        private void TransitionToNav(BotContext ctx)
         {
             ctx.Navigation.Stop(ctx.Game);
             _phase = FiveWayPhase.NavigatingToMonolith;
             _phaseStartTime = DateTime.Now;
-            StatusText = "Monolith found — navigating";
+            StatusText = "Monolith located — navigating to ring edge";
         }
 
         private static bool IsInDomain(GameController gc) =>
@@ -535,11 +589,7 @@ namespace AutoExile.Modes
             {
                 var d = Vector2.Distance(
                     new Vector2(p.GridPosNum.X, p.GridPosNum.Y), nearGrid);
-                if (d < maxDist && d < bestDist)
-                {
-                    best = p;
-                    bestDist = d;
-                }
+                if (d < maxDist && d < bestDist) { best = p; bestDist = d; }
             }
             return best;
         }
@@ -591,6 +641,7 @@ namespace AutoExile.Modes
 
         private void WriteEvent(string evt, string detail1, string detail2)
         {
+            if (_sessionStart == DateTime.MinValue) return;
             var ms = (long)(DateTime.Now - _sessionStart).TotalMilliseconds;
             _log?.WriteLine($"{ms},{evt},{detail1},{detail2}");
         }
