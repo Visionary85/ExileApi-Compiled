@@ -108,8 +108,14 @@ namespace AutoExile.Modes
         private int _runsCompleted;
         private DateTime _sessionStart = DateTime.MinValue;
 
-        // Logging
-        private StreamWriter? _log;
+        // Logging — two files per session:
+        //   fiveway_events_*.csv  : named events (phase transitions, skill fires, portal clicks, etc.)
+        //   fiveway_state_*.csv   : 500ms position/state snapshots for timeline analysis
+        private StreamWriter? _eventLog;
+        private StreamWriter? _stateLog;
+        private DateTime _lastStateSnap = DateTime.MinValue;
+        private const float StateSnapIntervalMs = 500f;
+        private Vector2 _lastLoggedPos;
 
         // Metadata substrings to identify the central monolith entity in the Domain.
         private static readonly string[] MonolithMetaPaths =
@@ -142,8 +148,11 @@ namespace AutoExile.Modes
             _resetCount = 0;
             _leaderLastSeenAt = DateTime.MinValue;
 
+            _lastStateSnap = DateTime.MinValue;
+            _lastLoggedPos = Vector2.Zero;
+
             ModeHelpers.EnableDefaultCombat(ctx);
-            OpenLog();
+            OpenLogs();
 
             var gc = ctx.Game;
             if (IsInDomain(gc))
@@ -164,7 +173,7 @@ namespace AutoExile.Modes
 
         public void OnExit()
         {
-            CloseLog();
+            CloseLogs();
             _phase = FiveWayPhase.Idle;
         }
 
@@ -184,8 +193,10 @@ namespace AutoExile.Modes
                 if (_phase == FiveWayPhase.Resetting || _phase == FiveWayPhase.EncounterEnded)
                     _runsCompleted++;
 
+                var encElapsed = _encounterStartTime == DateTime.MinValue
+                    ? 0 : (DateTime.Now - _encounterStartTime).TotalSeconds;
                 WriteEvent("AreaChange", "BackInHideout",
-                    $"phase={_phase},resets={_resetCount},runs={_runsCompleted}");
+                    $"runs={_runsCompleted},resets={_resetCount},encElapsed={encElapsed:F0}s");
 
                 _resetCount = 0;
                 _phase = FiveWayPhase.WaitingInHideout;
@@ -200,6 +211,8 @@ namespace AutoExile.Modes
             ctx.Combat.SuppressPositioning = inDomain;
             ctx.Combat.SuppressTargetedSkills = inDomain;
 
+            var phaseBefore = _phase;
+
             switch (_phase)
             {
                 case FiveWayPhase.WaitingInHideout:    TickWaitingInHideout(ctx);    break;
@@ -209,6 +222,11 @@ namespace AutoExile.Modes
                 case FiveWayPhase.Resetting:           TickResetting(ctx);           break;
                 case FiveWayPhase.EncounterEnded:      TickEncounterEnded(ctx);      break;
             }
+
+            if (_phase != phaseBefore)
+                WriteEvent("PhaseChange", _phase.ToString(), phaseBefore.ToString());
+
+            WriteStateSnapshot(ctx);
         }
 
         public void Render(BotContext ctx)
@@ -527,6 +545,8 @@ namespace AutoExile.Modes
                     {
                         _pendingShieldCharge = false;
                         _resetCount++;
+                        WriteEvent("ShieldCharge", $"reset={_resetCount}",
+                            $"elapsed={elapsed:F1}s");
                     }
                 }
             }
@@ -540,6 +560,8 @@ namespace AutoExile.Modes
                         _nextDashAt = now.AddMilliseconds(DashCooldownMs);
                         _shieldChargeAt = now.AddMilliseconds(ShieldChargeDelayAfterDashMs);
                         _pendingShieldCharge = true;
+                        WriteEvent("Dash", $"nextDashIn={DashCooldownMs:F0}ms",
+                            $"elapsed={elapsed:F1}s,scIn={ShieldChargeDelayAfterDashMs}ms");
                     }
                 }
             }
@@ -608,8 +630,13 @@ namespace AutoExile.Modes
 
         private void TryEnterPortal(BotContext ctx, Entity portal)
         {
-            WriteEvent("EnterPortal", portal.Metadata ?? "portal", "");
-            BotInput.ClickEntity(ctx.Game, portal);
+            var gc = ctx.Game;
+            var playerGrid = new Vector2(gc.Player.GridPosNum.X, gc.Player.GridPosNum.Y);
+            var portalGrid = new Vector2(portal.GridPosNum.X, portal.GridPosNum.Y);
+            var dist = Vector2.Distance(playerGrid, portalGrid);
+            WriteEvent("EnterPortal", portal.Metadata ?? "portal",
+                $"dist={dist:F0},leader={(_hasLastLeaderPos ? $"({_lastLeaderPos.X:F0};{_lastLeaderPos.Y:F0})" : "unknown")}");
+            BotInput.ClickEntity(gc, portal);
             StatusText = "Entering Domain of Timeless Conflict portal";
         }
 
@@ -618,32 +645,113 @@ namespace AutoExile.Modes
 
         // ──────────────────────────────────────────────────────────────────────
         // Logging
+        //
+        // fiveway_events_*.csv  — named events written on each significant action
+        //   Columns: TimeMs, Phase, Event, Detail1, Detail2
+        //
+        // fiveway_state_*.csv   — 500ms position/state snapshots
+        //   Columns: TimeMs, Phase, Status, PlayerX, PlayerY, MovedSinceLastSnap,
+        //            DistToMonolith, InRing, ResetCount, PendingShieldCharge,
+        //            NextDashMs, EncElapsedSec, EncRemainingSec,
+        //            Navigating, NavDestX, NavDestY, HasLeader, LeaderX, LeaderY
         // ──────────────────────────────────────────────────────────────────────
 
-        private void OpenLog()
+        private void OpenLogs()
         {
             try
             {
                 var dir = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "Logs", "FiveWay");
                 Directory.CreateDirectory(dir);
-                var path = Path.Combine(dir, $"fiveway_{DateTime.Now:yyyyMMdd_HHmmss}.csv");
-                _log = new StreamWriter(path, append: false) { AutoFlush = true };
-                _log.WriteLine("TimeMs,Event,Detail1,Detail2");
+                var ts = DateTime.Now.ToString("yyyyMMdd_HHmmss");
+
+                _eventLog = new StreamWriter(
+                    Path.Combine(dir, $"fiveway_events_{ts}.csv"), append: false)
+                    { AutoFlush = true };
+                _eventLog.WriteLine("TimeMs,Phase,Event,Detail1,Detail2");
+
+                _stateLog = new StreamWriter(
+                    Path.Combine(dir, $"fiveway_state_{ts}.csv"), append: false)
+                    { AutoFlush = false };  // flushed in batches; AutoFlush off for perf
+                _stateLog.WriteLine(
+                    "TimeMs,Phase,Status," +
+                    "PlayerX,PlayerY,MovedSinceLastSnap," +
+                    "DistToMonolith,InRing," +
+                    "ResetCount,PendingShieldCharge,NextDashMs," +
+                    "EncElapsedSec,EncRemainingSec," +
+                    "Navigating,NavDestX,NavDestY," +
+                    "HasLeader,LeaderX,LeaderY");
             }
-            catch { _log = null; }
+            catch { _eventLog = null; _stateLog = null; }
         }
 
-        private void CloseLog()
+        private void CloseLogs()
         {
-            try { _log?.Flush(); _log?.Close(); } catch { }
-            _log = null;
+            try { _eventLog?.Flush(); _eventLog?.Close(); } catch { }
+            try { _stateLog?.Flush();  _stateLog?.Close();  } catch { }
+            _eventLog = null;
+            _stateLog = null;
         }
 
         private void WriteEvent(string evt, string detail1, string detail2)
         {
             if (_sessionStart == DateTime.MinValue) return;
             var ms = (long)(DateTime.Now - _sessionStart).TotalMilliseconds;
-            _log?.WriteLine($"{ms},{evt},{detail1},{detail2}");
+            // Replace commas in user strings to keep CSV clean
+            _eventLog?.WriteLine(
+                $"{ms},{_phase},{evt}," +
+                $"{detail1.Replace(',', ';')},{detail2.Replace(',', ';')}");
+        }
+
+        private void WriteStateSnapshot(BotContext ctx)
+        {
+            if (_stateLog == null || _sessionStart == DateTime.MinValue) return;
+            if ((DateTime.Now - _lastStateSnap).TotalMilliseconds < StateSnapIntervalMs) return;
+            _lastStateSnap = DateTime.Now;
+
+            try
+            {
+                var gc = ctx.Game;
+                var pos = gc.Player?.GridPosNum ?? System.Numerics.Vector2.Zero;
+                var playerGrid = new Vector2(pos.X, pos.Y);
+
+                var moved = Vector2.Distance(playerGrid, _lastLoggedPos) > 1.5f ? 1 : 0;
+                _lastLoggedPos = playerGrid;
+
+                var distToMono = _monolithPos.HasValue
+                    ? Vector2.Distance(playerGrid, _monolithPos.Value) : -1f;
+                var inRing = distToMono >= 0 && distToMono <= MonolithArrivalDist ? 1 : 0;
+
+                var encElapsed = _encounterStartTime == DateTime.MinValue
+                    ? 0.0 : (DateTime.Now - _encounterStartTime).TotalSeconds;
+                var encRemaining = Math.Max(0, EncounterDurationSeconds - encElapsed);
+
+                var nextDashMs = _nextDashAt == DateTime.MinValue
+                    ? -1.0 : (_nextDashAt - DateTime.Now).TotalMilliseconds;
+
+                var navPath = ctx.Navigation.CurrentNavPath;
+                var navDest = navPath.Count > 0 ? navPath[navPath.Count - 1].Position : Vector2.Zero;
+                var navigating = ctx.Navigation.IsNavigating ? 1 : 0;
+
+                var leaderX = _hasLastLeaderPos ? _lastLeaderPos.X : -1f;
+                var leaderY = _hasLastLeaderPos ? _lastLeaderPos.Y : -1f;
+
+                var ms = (long)(DateTime.Now - _sessionStart).TotalMilliseconds;
+                var safeStatus = StatusText.Replace(',', ';');
+
+                _stateLog.WriteLine(
+                    $"{ms},{_phase},{safeStatus}," +
+                    $"{playerGrid.X:F1},{playerGrid.Y:F1},{moved}," +
+                    $"{distToMono:F1},{inRing}," +
+                    $"{_resetCount},{(_pendingShieldCharge ? 1 : 0)},{nextDashMs:F0}," +
+                    $"{encElapsed:F1},{encRemaining:F1}," +
+                    $"{navigating},{navDest.X:F1},{navDest.Y:F1}," +
+                    $"{(_hasLastLeaderPos ? 1 : 0)},{leaderX:F1},{leaderY:F1}");
+
+                // Flush every ~5 seconds to keep disk writes batched
+                if (ms % 5000 < StateSnapIntervalMs)
+                    _stateLog.Flush();
+            }
+            catch { /* never crash the bot tick over a log write */ }
         }
     }
 
