@@ -105,6 +105,12 @@ namespace AutoExile.Modes
         private float _warmupDelay;
         private int _resetCount;                                    // number of complete Dash→SC cycles
 
+        // Cached screen-space position of the monolith stone centre.
+        // Both Dash and Shield Charge are cursor-directed at this point so the character
+        // charges through the stone and oscillates across the ring boundary each cycle.
+        // Calculated once when the reset loop starts and reused every tick.
+        private Vector2 _monolithScreenPos;
+
         // Stats
         private int _runsCompleted;
         private DateTime _sessionStart = DateTime.MinValue;
@@ -520,12 +526,30 @@ namespace AutoExile.Modes
 
             if (elapsed >= _warmupDelay)
             {
+                // Cache the monolith stone's screen position once.
+                // Both Dash and Shield Charge will be aimed here every cycle so the
+                // character oscillates through the stone and crosses the ring boundary.
+                var gc = ctx.Game;
+                if (_monolithPos.HasValue)
+                {
+                    var worldPos = Pathfinding.GridToWorld3D(gc, _monolithPos.Value);
+                    var screenPos2 = gc.IngameState.Camera.WorldToScreen(worldPos);
+                    _monolithScreenPos = new Vector2(screenPos2.X, screenPos2.Y);
+                }
+                else
+                {
+                    // Fallback: centre of window if monolith position unknown
+                    var wr = gc.Window.GetWindowRectangle();
+                    _monolithScreenPos = new Vector2(wr.X + wr.Width / 2f, wr.Y + wr.Height / 2f);
+                }
+
                 // Begin with a Dash immediately — starts the exit cycle
                 _nextDashAt = DateTime.Now;
                 _pendingShieldCharge = false;
                 _resetCount = 0;
                 _encounterStartTime = DateTime.Now;
-                WriteEvent("ResetStart", "WarmupDone", $"delay={elapsed:F1}s");
+                WriteEvent("ResetStart", "WarmupDone",
+                    $"delay={elapsed:F1}s,stoneScreen=({_monolithScreenPos.X:F0};{_monolithScreenPos.Y:F0})");
                 _phase = FiveWayPhase.Resetting;
                 _phaseStartTime = DateTime.Now;
                 StatusText = "Starting reset loop — Dash→ShieldCharge cycles";
@@ -569,30 +593,41 @@ namespace AutoExile.Modes
             var remaining = EncounterDurationSeconds - elapsed;
             StatusText = $"Resetting: {_resetCount} resets — {remaining:F0}s left";
 
+            // Keep the cached screen position current (camera slowly pans in some builds)
+            if (_monolithPos.HasValue)
+            {
+                var gc2 = ctx.Game;
+                var wp = Pathfinding.GridToWorld3D(gc2, _monolithPos.Value);
+                var sp = gc2.IngameState.Camera.WorldToScreen(wp);
+                _monolithScreenPos = new Vector2(sp.X, sp.Y);
+            }
+
             if (!BotInput.CanAct) return;
 
             var now = DateTime.Now;
 
             if (_pendingShieldCharge)
             {
-                // Fire Shield Charge as soon as the short post-Dash gap has elapsed
+                // Fire Shield Charge aimed at the stone centre.
+                // Character charges through the stone → lands on the other side of the ring boundary.
                 if (now >= _shieldChargeAt)
                 {
-                    if (BotInput.PressKey(ShieldChargeKey))
+                    if (BotInput.CursorPressKey(_monolithScreenPos, ShieldChargeKey))
                     {
                         _pendingShieldCharge = false;
                         _resetCount++;
                         WriteEvent("ShieldCharge", $"reset={_resetCount}",
-                            $"elapsed={elapsed:F1}s");
+                            $"elapsed={elapsed:F1}s,screen=({_monolithScreenPos.X:F0};{_monolithScreenPos.Y:F0})");
                     }
                 }
             }
             else
             {
-                // Fire Dash when cooldown is ready
+                // Fire Dash aimed at the stone centre.
+                // After Shield Charge left us on one side, aiming at the stone exits the ring.
                 if (now >= _nextDashAt)
                 {
-                    if (BotInput.PressKey(DashKey))
+                    if (BotInput.CursorPressKey(_monolithScreenPos, DashKey))
                     {
                         _nextDashAt = now.AddMilliseconds(DashCooldownMs);
                         _shieldChargeAt = now.AddMilliseconds(ShieldChargeDelayAfterDashMs);
