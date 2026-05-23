@@ -68,6 +68,10 @@ namespace AutoExile.Modes
         // Set when stash times out mid-run; cleared on wave completion so the next
         // between-wave window gets a fresh attempt (inventory may have changed).
         private bool _stashBailed;
+        // Safety net: if we enter BetweenWaveStash more than this many times per wave,
+        // bail out regardless (guards against Succeeded-but-no-progress infinite loops).
+        private int _stashAttemptsThisWave;
+        private const int MaxStashAttemptsPerWave = 4;
         // Fallback stash: when compiled StashSystem fails (affinity tab full), we
         // navigate to the dump tab and Ctrl+Shift+Click each remaining item directly.
         private bool _stashFallbackActive;
@@ -160,6 +164,7 @@ namespace AutoExile.Modes
             _lastAreaName = "";
             _isStashing = false;
             _stashBailed = false;
+            _stashAttemptsThisWave = 0;
             _stashFallbackActive = false;
             _stashFallbackItems = null;
             _lootTracker.Reset();
@@ -716,7 +721,8 @@ namespace AutoExile.Modes
                 _waveStartLastClickTime = DateTime.MinValue;
                 _betweenWaveStartTime = DateTime.MinValue;
                 _lastMovementAt = DateTime.MinValue;
-                _stashBailed = false; // new wave — retry stash if inventory still needs it
+                _stashBailed = false;           // new wave — retry stash if inventory still needs it
+                _stashAttemptsThisWave = 0;     // reset per-wave attempt counter
             }
 
             // --- Priority 0: Don't interrupt active loot pickup ---
@@ -948,8 +954,17 @@ namespace AutoExile.Modes
 
                 if (shouldStartStashing || shouldContinueStashing)
                 {
+                    _stashAttemptsThisWave++;
+                    if (_stashAttemptsThisWave > MaxStashAttemptsPerWave)
+                    {
+                        _isStashing = false;
+                        _stashBailed = true;
+                        WriteEvent("StashBailed", $"Wave {_state.WavesCompleted + 1}", $"max-attempts={_stashAttemptsThisWave}");
+                        StatusText = "Stash attempt limit reached — skipping until next wave";
+                        return;
+                    }
                     _isStashing = true;
-                    Decision = $"Between waves → Stash ({stashableCount} items)";
+                    Decision = $"Between waves → Stash ({stashableCount} items, attempt {_stashAttemptsThisWave}/{MaxStashAttemptsPerWave})";
                     _phase = SimPhase.BetweenWaveStash;
                     _phaseStartTime = DateTime.Now;
                     StatusText = $"Stashing items ({stashableCount} stashable in inventory)";
@@ -1558,6 +1573,7 @@ namespace AutoExile.Modes
             switch (result)
             {
                 case StashResult.Succeeded:
+                    _isStashing = false;
                     _phase = SimPhase.WaveCycle;
                     _phaseStartTime = DateTime.Now;
                     StatusText = $"Stashed {ctx.Stash.ItemsStored} items — resuming wave cycle";
