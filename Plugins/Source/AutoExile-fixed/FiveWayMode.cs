@@ -123,6 +123,12 @@ namespace AutoExile.Modes
         private int _killCount;             // kills this encounter
         private int _sessionKillCount;      // kills this session (across all runs)
 
+        // Portal click rate-limiting — BotInput.ClickEntity runs on the game thread at
+        // tick rate (~60/s). Without a cooldown the bot spams 60+ clicks per second on the
+        // portal which jams the game's click queue and makes entry unreliable.
+        private DateTime _lastPortalClickAt = DateTime.MinValue;
+        private const float PortalClickCooldownMs = 600f;
+
         // Logging — two files per session:
         //   fiveway_events_*.csv  : named events (phase transitions, skill fires, portal clicks, etc.)
         //   fiveway_state_*.csv   : 500ms position/state snapshots for timeline analysis
@@ -169,6 +175,7 @@ namespace AutoExile.Modes
             _lastStateSnap = DateTime.MinValue;
             _lastLoggedPos = Vector2.Zero;
             _hasLoggedDomainEntities = false;
+            _lastPortalClickAt = DateTime.MinValue;
 
             ModeHelpers.EnableDefaultCombat(ctx);
             OpenLogs();
@@ -235,17 +242,38 @@ namespace AutoExile.Modes
                 _hasLastLeaderPos = false;
                 _leaderLastSeenAt = DateTime.MinValue;
                 _hasLoggedDomainEntities = false;
+                _lastPortalClickAt = DateTime.MinValue;
                 _phase = FiveWayPhase.WaitingInHideout;
                 _phaseStartTime = DateTime.Now;
                 StatusText = "Returned to hideout — waiting for next run";
                 return;
             }
 
-            // Suppress combat movement and targeted skills in the Domain so the bot
-            // stays planted at the ring edge and doesn't chase monsters.
             bool inDomain = IsInDomain(gc);
-            ctx.Combat.SuppressPositioning = inDomain;
+
+            // Detect domain entry — transition WaitingInHideout → FindMonolith.
+            // There is no OnZoneChange callback so we poll each tick. Without this,
+            // TickWaitingInHideout runs forever inside the domain and the bot just
+            // follows the carry instead of doing resets.
+            if (inDomain && _phase == FiveWayPhase.WaitingInHideout)
+            {
+                _monolithPos = null;
+                _monolithId = null;
+                _hasLoggedDomainEntities = false;
+                WriteEvent("EnteredDomain", "StartFindMonolith", "");
+                _phase = FiveWayPhase.FindMonolith;
+                _phaseStartTime = DateTime.Now;
+                StatusText = "Entered Domain — finding monolith";
+            }
+
+            // Suppress combat AI targeting in the domain so it doesn't fight monsters.
+            // Only suppress movement (positioning) during the planted phases — FindMonolith
+            // and NavigatingToMonolith need free navigation to reach the ring edge.
             ctx.Combat.SuppressTargetedSkills = inDomain;
+            ctx.Combat.SuppressPositioning = inDomain && (
+                _phase == FiveWayPhase.WarmupDelay ||
+                _phase == FiveWayPhase.Resetting ||
+                _phase == FiveWayPhase.EncounterEnded);
 
             var phaseBefore = _phase;
 
@@ -621,32 +649,33 @@ namespace AutoExile.Modes
 
             if (_pendingShieldCharge)
             {
-                // Fire Shield Charge aimed at the stone centre.
-                // Character charges through the stone → lands on the other side of the ring boundary.
+                // Fire Shield Charge aimed at stone centre — moves bot INTO ring.
+                // _nextDashAt is set HERE (after SC) so the bot stays inside the ring
+                // for the full DashCooldownMs before dashing out again.
                 if (now >= _shieldChargeAt)
                 {
                     if (BotInput.CursorPressKey(_monolithScreenPos, ShieldChargeKey))
                     {
                         _pendingShieldCharge = false;
                         _resetCount++;
+                        // Cooldown measured from re-entry so bot waits full 2210ms inside ring
+                        _nextDashAt = now.AddMilliseconds(DashCooldownMs);
                         WriteEvent("ShieldCharge", $"reset={_resetCount}",
-                            $"elapsed={elapsed:F1}s,screen=({_monolithScreenPos.X:F0};{_monolithScreenPos.Y:F0})");
+                            $"elapsed={elapsed:F1}s,nextDashIn={DashCooldownMs:F0}ms");
                     }
                 }
             }
             else
             {
-                // Fire Dash aimed at the stone centre.
-                // After Shield Charge left us on one side, aiming at the stone exits the ring.
+                // Fire Dash aimed at stone centre — moves bot OUT of ring (away from cursor).
                 if (now >= _nextDashAt)
                 {
                     if (BotInput.CursorPressKey(_monolithScreenPos, DashKey))
                     {
-                        _nextDashAt = now.AddMilliseconds(DashCooldownMs);
                         _shieldChargeAt = now.AddMilliseconds(ShieldChargeDelayAfterDashMs);
                         _pendingShieldCharge = true;
-                        WriteEvent("Dash", $"nextDashIn={DashCooldownMs:F0}ms",
-                            $"elapsed={elapsed:F1}s,scIn={ShieldChargeDelayAfterDashMs}ms");
+                        WriteEvent("Dash", $"scIn={ShieldChargeDelayAfterDashMs}ms",
+                            $"elapsed={elapsed:F1}s");
                     }
                 }
             }
@@ -727,6 +756,12 @@ namespace AutoExile.Modes
 
         private void TryEnterPortal(BotContext ctx, Entity portal)
         {
+            if ((DateTime.Now - _lastPortalClickAt).TotalMilliseconds < PortalClickCooldownMs)
+            {
+                StatusText = "Entering Domain of Timeless Conflict portal";
+                return;
+            }
+            _lastPortalClickAt = DateTime.Now;
             var gc = ctx.Game;
             var playerGrid = new Vector2(gc.Player.GridPosNum.X, gc.Player.GridPosNum.Y);
             var portalGrid = new Vector2(portal.GridPosNum.X, portal.GridPosNum.Y);
