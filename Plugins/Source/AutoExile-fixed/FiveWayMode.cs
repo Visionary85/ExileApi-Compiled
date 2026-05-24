@@ -558,20 +558,57 @@ namespace AutoExile.Modes
 
         // ──────────────────────────────────────────────────────────────────────
         // Phase: WarmupDelay
-        // Hold position for 7-10s to let the carry trigger the first wave.
+        // Wait for the crystal to explode (LegionEndlessInitiator goes non-alive
+        // or disappears) which signals the ring is active and resets can begin.
+        // Falls back to a 1–2 s timer if the entity state never changes.
         // ──────────────────────────────────────────────────────────────────────
 
         private void TickWarmupDelay(BotContext ctx)
         {
             ctx.Navigation.Stop(ctx.Game);
-            var elapsed = (DateTime.Now - _phaseStartTime).TotalSeconds;
+            var gc = ctx.Game;
+            var now = DateTime.Now;
+            var elapsed = (now - _phaseStartTime).TotalSeconds;
 
-            if (elapsed >= _warmupDelay)
+            // Check crystal state every tick — entity goes non-alive when crystal explodes.
+            bool crystalExploded = false;
+            string crystalTrigger = "TimerExpired";
+            if (_monolithId.HasValue)
+            {
+                var monEnt = gc.EntityListWrapper.OnlyValidEntities
+                    .FirstOrDefault(e => e.Id == _monolithId.Value);
+                if (monEnt == null)
+                {
+                    crystalExploded = true;
+                    crystalTrigger = "EntityGone";
+                    WriteEvent("CrystalExploded", "EntityGone",
+                        $"elapsed={elapsed:F2}s,id={_monolithId.Value}");
+                }
+                else if (!monEnt.IsAlive)
+                {
+                    crystalExploded = true;
+                    crystalTrigger = "EntityDead";
+                    WriteEvent("CrystalExploded", "EntityDead",
+                        $"elapsed={elapsed:F2}s,id={_monolithId.Value},path={monEnt.Metadata}");
+                }
+                else
+                {
+                    // Crystal still alive — log entity state periodically so we can verify what changes
+                    if ((int)(elapsed * 4) != (int)((elapsed - 0.016) * 4)) // ~every 250ms
+                    {
+                        WriteEvent("CrystalWatch", "Alive",
+                            $"elapsed={elapsed:F2}s,isAlive={monEnt.IsAlive}");
+                    }
+                }
+            }
+
+            bool timerExpired = elapsed >= _warmupDelay;
+
+            if (crystalExploded || timerExpired)
             {
                 // Cache the monolith stone's screen position once.
                 // Both Dash and Shield Charge will be aimed here every cycle so the
                 // character oscillates through the stone and crosses the ring boundary.
-                var gc = ctx.Game;
                 if (_monolithPos.HasValue)
                 {
                     var worldPos = AutoExile.Systems.Pathfinding.GridToWorld3D(gc, _monolithPos.Value);
@@ -586,19 +623,19 @@ namespace AutoExile.Modes
                 }
 
                 // Begin with a Dash immediately — starts the exit cycle
-                _nextDashAt = DateTime.Now;
+                _nextDashAt = now;
                 _pendingShieldCharge = false;
                 _resetCount = 0;
-                _encounterStartTime = DateTime.Now;
-                WriteEvent("ResetStart", "WarmupDone",
+                _encounterStartTime = now;
+                WriteEvent("ResetStart", crystalTrigger,
                     $"delay={elapsed:F1}s,stoneScreen=({_monolithScreenPos.X:F0};{_monolithScreenPos.Y:F0})");
                 _phase = FiveWayPhase.Resetting;
-                _phaseStartTime = DateTime.Now;
+                _phaseStartTime = now;
                 StatusText = "Starting reset loop — Dash→ShieldCharge cycles";
             }
             else
             {
-                StatusText = $"Holding position — reset starts in {_warmupDelay - elapsed:F1}s";
+                StatusText = $"Waiting for crystal explosion ({elapsed:F1}s / {_warmupDelay:F1}s fallback)";
             }
         }
 
