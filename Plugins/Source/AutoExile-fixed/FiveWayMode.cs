@@ -139,12 +139,11 @@ namespace AutoExile.Modes
         private Vector2 _lastLoggedPos;
 
         // Metadata substrings to identify the central monolith entity in the Domain.
+        // Confirmed from live entity scan: the stone is EntityType.Terrain with path
+        // "Metadata/Terrain/Leagues/Legion/Objects/LegionEndlessInitiator".
         private static readonly string[] MonolithMetaPaths =
         {
-            "LegionMonolith",
-            "TimelessConflict",
-            "Legion/Monolith",
-            "LegionStone",
+            "LegionEndlessInitiator",   // confirmed — Domain of Timeless Conflict central stone
         };
 
         private static readonly Random _rng = new();
