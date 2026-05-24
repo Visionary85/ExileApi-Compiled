@@ -670,21 +670,33 @@ namespace AutoExile.Modes
         private static Entity? FindLeader(GameController gc, string name)
         {
             if (string.IsNullOrEmpty(name)) return null;
-            return gc.EntityListWrapper
-                .ValidEntitiesByType[EntityType.Player]
-                .FirstOrDefault(e => string.Equals(
-                    e.RenderName, name, StringComparison.OrdinalIgnoreCase));
+            foreach (var e in gc.EntityListWrapper.OnlyValidEntities)
+            {
+                if (e.Type != EntityType.Player) continue;
+                var playerComp = e.GetComponent<Player>();
+                if (playerComp != null &&
+                    string.Equals(playerComp.PlayerName, name, StringComparison.OrdinalIgnoreCase))
+                    return e;
+            }
+            return null;
         }
 
         private static Entity? FindNearestPortal(GameController gc, Vector2 nearGrid, float maxDist)
         {
             Entity? best = null;
             float bestDist = float.MaxValue;
-            foreach (var p in gc.EntityListWrapper.ValidEntitiesByType[EntityType.TownPortal])
+            foreach (var e in gc.EntityListWrapper.OnlyValidEntities)
             {
-                var d = Vector2.Distance(
-                    new Vector2(p.GridPosNum.X, p.GridPosNum.Y), nearGrid);
-                if (d < maxDist && d < bestDist) { best = p; bestDist = d; }
+                // Accept standard portals, area transitions, and Legion-specific paths
+                bool isPortal = e.Type == EntityType.TownPortal
+                    || e.Type == EntityType.Portal
+                    || e.Type == EntityType.AreaTransition
+                    || (e.Path?.Contains("Timeless", StringComparison.OrdinalIgnoreCase) == true)
+                    || (e.Path?.Contains("Legion", StringComparison.OrdinalIgnoreCase) == true);
+                if (!isPortal) continue;
+
+                var d = Vector2.Distance(new Vector2(e.GridPosNum.X, e.GridPosNum.Y), nearGrid);
+                if (d < maxDist && d < bestDist) { best = e; bestDist = d; }
             }
             return best;
         }
