@@ -785,9 +785,7 @@ namespace AutoExile.Modes
                 return;
             }
 
-            WriteEvent("ExitDomain", "EncounterEnded",
-                $"kills={_killCount},resets={_resetCount}");
-            TryEnterPortal(ctx, portal);
+            TryEnterPortal(ctx, portal, exitLog: true);
             StatusText = "Exiting domain to hideout";
         }
 
@@ -826,12 +824,9 @@ namespace AutoExile.Modes
             float bestDist = float.MaxValue;
             foreach (var e in gc.EntityListWrapper.OnlyValidEntities)
             {
-                // Accept standard portals, area transitions, and Legion-specific paths
                 bool isPortal = e.Type == EntityType.TownPortal
                     || e.Type == EntityType.Portal
-                    || e.Type == EntityType.AreaTransition
-                    || (e.Path?.Contains("Timeless", StringComparison.OrdinalIgnoreCase) == true)
-                    || (e.Path?.Contains("Legion", StringComparison.OrdinalIgnoreCase) == true);
+                    || e.Type == EntityType.AreaTransition;
                 if (!isPortal) continue;
 
                 var d = Vector2.Distance(new Vector2(e.GridPosNum.X, e.GridPosNum.Y), nearGrid);
@@ -852,22 +847,22 @@ namespace AutoExile.Modes
             return null;
         }
 
-        private void TryEnterPortal(BotContext ctx, Entity portal)
+        private void TryEnterPortal(BotContext ctx, Entity portal, bool exitLog = false)
         {
             if ((DateTime.Now - _lastPortalClickAt).TotalMilliseconds < PortalClickCooldownMs)
-            {
-                StatusText = "Entering Domain of Timeless Conflict portal";
                 return;
-            }
             _lastPortalClickAt = DateTime.Now;
             var gc = ctx.Game;
             var playerGrid = new Vector2(gc.Player.GridPosNum.X, gc.Player.GridPosNum.Y);
             var portalGrid = new Vector2(portal.GridPosNum.X, portal.GridPosNum.Y);
             var dist = Vector2.Distance(playerGrid, portalGrid);
-            WriteEvent("EnterPortal", portal.Metadata ?? "portal",
-                $"dist={dist:F0},leader={(_hasLastLeaderPos ? $"({_lastLeaderPos.X:F0};{_lastLeaderPos.Y:F0})" : "unknown")}");
+            if (exitLog)
+                WriteEvent("ExitDomain", "EncounterEnded",
+                    $"kills={_killCount},resets={_resetCount},portal={portal.Metadata ?? "?"}");
+            else
+                WriteEvent("EnterPortal", portal.Metadata ?? "portal",
+                    $"dist={dist:F0},leader={(_hasLastLeaderPos ? $"({_lastLeaderPos.X:F0};{_lastLeaderPos.Y:F0})" : "unknown")}");
             BotInput.ClickEntity(gc, portal);
-            StatusText = "Entering Domain of Timeless Conflict portal";
         }
 
         private static float RandRange(float min, float max) =>
