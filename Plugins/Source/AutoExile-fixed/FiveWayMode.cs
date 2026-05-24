@@ -115,6 +115,7 @@ namespace AutoExile.Modes
         // Stats
         private int _runsCompleted;
         private DateTime _sessionStart = DateTime.MinValue;
+        private bool _hasLoggedDomainEntities;
 
         // Kill tracking — same pattern as the KillCounter plugin:
         // scan dead hostile monsters each tick, use entity ID to avoid double-counting.
@@ -167,6 +168,7 @@ namespace AutoExile.Modes
 
             _lastStateSnap = DateTime.MinValue;
             _lastLoggedPos = Vector2.Zero;
+            _hasLoggedDomainEntities = false;
 
             ModeHelpers.EnableDefaultCombat(ctx);
             OpenLogs();
@@ -229,6 +231,10 @@ namespace AutoExile.Modes
                 _killCount = 0;
                 _countedKills.Clear();
                 _encounterStartTime = DateTime.MinValue;
+                // Reset leader tracking so we don't immediately re-enter via stale last position
+                _hasLastLeaderPos = false;
+                _leaderLastSeenAt = DateTime.MinValue;
+                _hasLoggedDomainEntities = false;
                 _phase = FiveWayPhase.WaitingInHideout;
                 _phaseStartTime = DateTime.Now;
                 StatusText = "Returned to hideout — waiting for next run";
@@ -334,16 +340,9 @@ namespace AutoExile.Modes
                 }
 
                 ctx.Navigation.Stop(gc);
-
-                // Close enough — check if a portal just appeared near the leader
-                var portal = FindNearestPortal(gc, leaderGrid, PortalSearchRadius);
-                if (portal != null)
-                {
-                    TryEnterPortal(ctx, portal);
-                    return;
-                }
-
-                StatusText = $"Near {leaderName} — waiting for Domain portal";
+                // Leader is still here — do NOT enter the portal. Always follow, never go first.
+                // Entry is handled below once the leader vanishes (they went through first).
+                StatusText = $"Near {leaderName} — waiting for them to enter portal first";
             }
             else if (_hasLastLeaderPos)
             {
@@ -409,6 +408,15 @@ namespace AutoExile.Modes
                 return;
             }
 
+            // Dump all entity metadata once per zone load so we can identify the monolith path
+            if (!_hasLoggedDomainEntities)
+            {
+                _hasLoggedDomainEntities = true;
+                foreach (var e in gc.EntityListWrapper.OnlyValidEntities)
+                    if (e.Metadata != null)
+                        WriteEvent("DomainEntityScan", e.Type.ToString(), e.Metadata);
+            }
+
             if (_monolithPos.HasValue)
             {
                 TransitionToNav(ctx);
@@ -438,7 +446,11 @@ namespace AutoExile.Modes
                 var playerGrid = new Vector2(gc.Player.GridPosNum.X, gc.Player.GridPosNum.Y);
                 var dist = Vector2.Distance(playerGrid, leaderGrid);
 
-                if (dist <= MonolithArrivalDist)
+                // Commit once close — leader heads straight to the stone so their position
+                // at ~40 grid units from us is a reliable enough centre approximation.
+                // NavigatingToMonolith will then stop 18 units from this point (ring edge).
+                const float LeaderCommitDist = 40f;
+                if (dist <= LeaderCommitDist)
                 {
                     _monolithPos = leaderGrid;
                     WriteEvent("MonolithApprox", "LeaderPos", $"dist={dist:F0}");
