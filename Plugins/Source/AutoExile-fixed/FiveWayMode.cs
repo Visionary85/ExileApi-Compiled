@@ -51,6 +51,12 @@ namespace AutoExile.Modes
         // explosion completes — this gap lets the carry fully position before oscillation begins.
         private const float CrystalExplodedHoldMs = 1500f;
 
+        // Extra hold inside the ring after each Shield Charge before the next Dash.
+        // DashCooldownMs (2210ms) alone gives only ~2010ms actual in-ring time after SC
+        // animation completes, barely meeting the 2s requirement. This adds safety margin
+        // so the crystal reliably resets each cycle.
+        private const float InRingExtraHoldMs = 500f;
+
         // Brief settle after navigation stops before the first Dash fires.
         // Gives the camera time to stabilise so the monolith screen position is accurate.
         private const float WarmupMinSeconds = 1f;
@@ -666,9 +672,10 @@ namespace AutoExile.Modes
         // Core loop:
         //   1. Press Dash (W) — exits the ring via micro-movement
         //   2. After ShieldChargeDelayAfterDashMs, press Shield Charge (Q) — re-enters ring
-        //   3. Wait DashCooldownMs from last Dash before repeating
+        //   3. Wait DashCooldownMs + InRingExtraHoldMs before repeating
         //
-        // The ~2.21s Dash cooldown satisfies the 2-second in-ring stay requirement.
+        // In-ring hold = DashCooldownMs (2210ms) + InRingExtraHoldMs (500ms) = ~2710ms from SC press.
+        // SC animation takes ~200ms so actual in-ring time ≈ 2510ms, comfortably above the 2s requirement.
         // Shield Charge has no cooldown so it fires as fast as BotInput allows.
         // ──────────────────────────────────────────────────────────────────────
 
@@ -678,7 +685,7 @@ namespace AutoExile.Modes
 
             if (elapsed >= EncounterDurationSeconds)
             {
-                var theoreticalMax = (int)(elapsed / (DashCooldownMs / 1000f));
+                var theoreticalMax = (int)(elapsed / ((DashCooldownMs + InRingExtraHoldMs) / 1000f));
                 var efficiency = theoreticalMax > 0
                     ? (float)_resetCount / theoreticalMax * 100f : 0f;
                 WriteEvent("ResetEnd", "TimerExpired",
@@ -717,10 +724,10 @@ namespace AutoExile.Modes
                     {
                         _pendingShieldCharge = false;
                         _resetCount++;
-                        // Cooldown measured from re-entry so bot waits full 2210ms inside ring
-                        _nextDashAt = now.AddMilliseconds(DashCooldownMs);
+                        var totalHold = DashCooldownMs + InRingExtraHoldMs;
+                        _nextDashAt = now.AddMilliseconds(totalHold);
                         WriteEvent("ShieldCharge", $"reset={_resetCount}",
-                            $"elapsed={elapsed:F1}s,nextDashIn={DashCooldownMs:F0}ms");
+                            $"elapsed={elapsed:F1}s,nextDashIn={totalHold:F0}ms");
                     }
                 }
             }
