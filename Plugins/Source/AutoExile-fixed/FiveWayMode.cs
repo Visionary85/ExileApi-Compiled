@@ -65,7 +65,7 @@ namespace AutoExile.Modes
         // Total encounter duration in seconds.
         // Base 15s + 1 min per emblem. With 5 emblems = ~315s. Stop a few seconds early
         // so the last reset completes cleanly before the encounter ends.
-        private const float EncounterDurationSeconds = 305f;
+        private const float EncounterDurationSeconds = 312f;
 
         // Grid distance at which the bot stops and considers itself positioned at the ring edge.
         // The LegionEndlessInitiator entity origin is at the centre of the stone structure.
@@ -311,24 +311,33 @@ namespace AutoExile.Modes
             if (ctx.Graphics == null) return;
             var g = ctx.Graphics;
             var y = OverlayY;
-            const float lh = 16f;
+            const float lh = 18f;
 
             g.DrawText($"[5-Way] Phase: {_phase}", new Vector2(OverlayX, y), SharpDX.Color.White);
             y += lh;
             g.DrawText(StatusText, new Vector2(OverlayX, y), SharpDX.Color.LightGreen);
             y += lh;
 
+            // Kill count — always visible while in domain
+            bool inDomain = _phase != FiveWayPhase.Idle && _phase != FiveWayPhase.WaitingInHideout;
+            if (inDomain)
+            {
+                g.DrawText($"KILLS: {_killCount}", new Vector2(OverlayX, y), SharpDX.Color.Orange);
+                y += lh;
+            }
+
             if (_phase == FiveWayPhase.Resetting || _phase == FiveWayPhase.EncounterEnded)
             {
                 var elapsed = _encounterStartTime == DateTime.MinValue
                     ? 0 : (DateTime.Now - _encounterStartTime).TotalSeconds;
                 var remaining = Math.Max(0, EncounterDurationSeconds - elapsed);
-                var theoreticalMax = elapsed > 0 ? (int)(elapsed / (DashCooldownMs / 1000f)) : 0;
+                var cycleSec = (DashCooldownMs + InRingExtraHoldMs) / 1000f;
+                var theoreticalMax = elapsed > 0 ? (int)(elapsed / cycleSec) : 0;
                 var efficiency = theoreticalMax > 0
                     ? (float)_resetCount / theoreticalMax * 100f : 0f;
 
                 g.DrawText(
-                    $"Kills: {_killCount}  Resets: {_resetCount}/{theoreticalMax} ({efficiency:F0}%)  {remaining:F0}s left",
+                    $"Resets: {_resetCount}/{theoreticalMax} ({efficiency:F0}%)  {remaining:F0}s left",
                     new Vector2(OverlayX, y), SharpDX.Color.Cyan);
                 y += lh;
 
@@ -344,9 +353,9 @@ namespace AutoExile.Modes
                 }
             }
 
-            if (_runsCompleted > 0)
+            if (_sessionKillCount > 0)
             {
-                g.DrawText($"Runs: {_runsCompleted}  Session kills: {_sessionKillCount}",
+                g.DrawText($"Session: {_sessionKillCount} kills across {_runsCompleted} run{(_runsCompleted != 1 ? "s" : "")}",
                     new Vector2(OverlayX, y), SharpDX.Color.Gold);
             }
         }
