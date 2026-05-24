@@ -46,10 +46,10 @@ namespace AutoExile.Modes
         // before Shield Charge's enter micro-movement fires.
         private const float ShieldChargeDelayAfterDashMs = 200f;
 
-        // Random warmup window after reaching the monolith ring edge before pressing anything.
-        // Lets the carry trigger the first wave cleanly before resets begin.
-        private const float WarmupMinSeconds = 7f;
-        private const float WarmupMaxSeconds = 10f;
+        // Brief settle after navigation stops before the first Dash fires.
+        // Gives the camera time to stabilise so the monolith screen position is accurate.
+        private const float WarmupMinSeconds = 1f;
+        private const float WarmupMaxSeconds = 2f;
 
         // Total encounter duration in seconds.
         // Base 15s + 1 min per emblem. With 5 emblems = ~315s. Stop a few seconds early
