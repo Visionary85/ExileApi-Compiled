@@ -271,14 +271,8 @@ namespace AutoExile.Modes
                 (EmblemPathSubstring, EmblemsNeeded)
             };
 
-            // After the first emblem is right-clicked (auto-inserts + selects domain),
-            // ctrl+click 4 more to fill the remaining device slots.
-            var extraEmblems = new string[]
-            {
-                EmblemPathSubstring, EmblemPathSubstring,
-                EmblemPathSubstring, EmblemPathSubstring
-            };
-
+            // Right-clicking one emblem into the device auto-loads all five from inventory.
+            // No scarabPaths needed — the game fills the remaining slots automatically.
             _hideoutFlow.Start(
                 mapFilter:             MapDeviceSystem.IsTimelessEmblem,
                 stashItemFilter:       KeepEmblemsFilter,
@@ -286,8 +280,7 @@ namespace AutoExile.Modes
                 dumpTabName:           dumpTab,
                 resourceTabName:       fragmentTab,
                 inventoryFragmentPath: EmblemPathSubstring,
-                withdrawList:          withdrawList,
-                scarabPaths:           extraEmblems);
+                withdrawList:          withdrawList);
         }
 
         // Stash everything except Timeless Emblems
