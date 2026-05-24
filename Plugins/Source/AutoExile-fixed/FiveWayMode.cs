@@ -46,6 +46,11 @@ namespace AutoExile.Modes
         // before Shield Charge's enter micro-movement fires.
         private const float ShieldChargeDelayAfterDashMs = 200f;
 
+        // How long to hold inside the ring after crystal explosion is detected before
+        // firing the first Dash. Crystal entity goes dead slightly before the visual
+        // explosion completes — this gap lets the carry fully position before oscillation begins.
+        private const float CrystalExplodedHoldMs = 1500f;
+
         // Brief settle after navigation stops before the first Dash fires.
         // Gives the camera time to stabilise so the monolith screen position is accurate.
         private const float WarmupMinSeconds = 1f;
@@ -106,6 +111,7 @@ namespace AutoExile.Modes
         private DateTime _encounterStartTime = DateTime.MinValue;
         private float _warmupDelay;
         private int _resetCount;                                    // number of complete Dash→SC cycles
+        private DateTime _crystalExplodedAt = DateTime.MinValue;   // when crystal explosion was detected
 
         // Cached screen-space position of the monolith stone centre.
         // Cursor stays fixed here: Shield Charge moves TOWARD cursor (stone is solid, stops the
@@ -261,6 +267,7 @@ namespace AutoExile.Modes
                 _monolithPos = null;
                 _monolithId = null;
                 _hasLoggedDomainEntities = false;
+                _crystalExplodedAt = DateTime.MinValue;
                 WriteEvent("EnteredDomain", "StartFindMonolith", "");
                 _phase = FiveWayPhase.FindMonolith;
                 _phaseStartTime = DateTime.Now;
@@ -570,73 +577,87 @@ namespace AutoExile.Modes
             var now = DateTime.Now;
             var elapsed = (now - _phaseStartTime).TotalSeconds;
 
-            // Check crystal state every tick — entity goes non-alive when crystal explodes.
-            bool crystalExploded = false;
-            string crystalTrigger = "TimerExpired";
-            if (_monolithId.HasValue)
+            // Phase 1: watch for crystal explosion (entity goes non-alive or disappears).
+            // Once detected, hold CrystalExplodedHoldMs before firing first Dash so the
+            // carry has time to position and the visual explosion fully completes.
+            if (_crystalExplodedAt == DateTime.MinValue)
             {
-                var monEnt = gc.EntityListWrapper.OnlyValidEntities
-                    .FirstOrDefault(e => e.Id == _monolithId.Value);
-                if (monEnt == null)
+                bool exploded = false;
+                string trigger = "";
+
+                if (_monolithId.HasValue)
                 {
-                    crystalExploded = true;
-                    crystalTrigger = "EntityGone";
-                    WriteEvent("CrystalExploded", "EntityGone",
-                        $"elapsed={elapsed:F2}s,id={_monolithId.Value}");
-                }
-                else if (!monEnt.IsAlive)
-                {
-                    crystalExploded = true;
-                    crystalTrigger = "EntityDead";
-                    WriteEvent("CrystalExploded", "EntityDead",
-                        $"elapsed={elapsed:F2}s,id={_monolithId.Value},path={monEnt.Metadata}");
-                }
-                else
-                {
-                    // Crystal still alive — log entity state periodically so we can verify what changes
-                    if ((int)(elapsed * 4) != (int)((elapsed - 0.016) * 4)) // ~every 250ms
+                    var monEnt = gc.EntityListWrapper.OnlyValidEntities
+                        .FirstOrDefault(e => e.Id == _monolithId.Value);
+                    if (monEnt == null)
                     {
-                        WriteEvent("CrystalWatch", "Alive",
-                            $"elapsed={elapsed:F2}s,isAlive={monEnt.IsAlive}");
+                        exploded = true;
+                        trigger = "EntityGone";
+                        WriteEvent("CrystalExploded", "EntityGone",
+                            $"elapsed={elapsed:F2}s,id={_monolithId.Value}");
+                    }
+                    else if (!monEnt.IsAlive)
+                    {
+                        exploded = true;
+                        trigger = "EntityDead";
+                        WriteEvent("CrystalExploded", "EntityDead",
+                            $"elapsed={elapsed:F2}s,id={_monolithId.Value},path={monEnt.Metadata}");
                     }
                 }
-            }
 
-            bool timerExpired = elapsed >= _warmupDelay;
-
-            if (crystalExploded || timerExpired)
-            {
-                // Cache the monolith stone's screen position once.
-                // Both Dash and Shield Charge will be aimed here every cycle so the
-                // character oscillates through the stone and crosses the ring boundary.
-                if (_monolithPos.HasValue)
+                // Fallback: max-timer fires even without crystal detection
+                bool timerExpired = elapsed >= _warmupDelay;
+                if (timerExpired && !exploded)
                 {
-                    var worldPos = AutoExile.Systems.Pathfinding.GridToWorld3D(gc, _monolithPos.Value);
-                    var screenPos2 = gc.IngameState.Camera.WorldToScreen(worldPos);
-                    _monolithScreenPos = new Vector2(screenPos2.X, screenPos2.Y);
+                    exploded = true;
+                    trigger = "TimerExpired";
+                    WriteEvent("CrystalExploded", "TimerExpired",
+                        $"elapsed={elapsed:F2}s");
+                }
+
+                if (exploded)
+                {
+                    _crystalExplodedAt = now;
+                    StatusText = $"Crystal exploded ({trigger}) — holding {CrystalExplodedHoldMs / 1000f:F1}s before loop";
                 }
                 else
                 {
-                    // Fallback: centre of window if monolith position unknown
-                    var wr = gc.Window.GetWindowRectangle();
-                    _monolithScreenPos = new Vector2(wr.X + wr.Width / 2f, wr.Y + wr.Height / 2f);
+                    StatusText = $"Waiting for crystal explosion ({elapsed:F1}s / {_warmupDelay:F1}s fallback)";
                 }
+                return;
+            }
 
-                // Begin with a Dash immediately — starts the exit cycle
-                _nextDashAt = now;
-                _pendingShieldCharge = false;
-                _resetCount = 0;
-                _encounterStartTime = now;
-                WriteEvent("ResetStart", crystalTrigger,
-                    $"delay={elapsed:F1}s,stoneScreen=({_monolithScreenPos.X:F0};{_monolithScreenPos.Y:F0})");
-                _phase = FiveWayPhase.Resetting;
-                _phaseStartTime = now;
-                StatusText = "Starting reset loop — Dash→ShieldCharge cycles";
+            // Phase 2: hold inside the ring for CrystalExplodedHoldMs after explosion.
+            var holdElapsed = (now - _crystalExplodedAt).TotalMilliseconds;
+            if (holdElapsed < CrystalExplodedHoldMs)
+            {
+                var remaining = (CrystalExplodedHoldMs - holdElapsed) / 1000f;
+                StatusText = $"Holding after explosion — loop starts in {remaining:F1}s";
+                return;
+            }
+
+            // Hold complete — cache screen position and start oscillation loop.
+            if (_monolithPos.HasValue)
+            {
+                var worldPos = AutoExile.Systems.Pathfinding.GridToWorld3D(gc, _monolithPos.Value);
+                var screenPos2 = gc.IngameState.Camera.WorldToScreen(worldPos);
+                _monolithScreenPos = new Vector2(screenPos2.X, screenPos2.Y);
             }
             else
             {
-                StatusText = $"Waiting for crystal explosion ({elapsed:F1}s / {_warmupDelay:F1}s fallback)";
+                var wr = gc.Window.GetWindowRectangle();
+                _monolithScreenPos = new Vector2(wr.X + wr.Width / 2f, wr.Y + wr.Height / 2f);
             }
+
+            _nextDashAt = now;
+            _pendingShieldCharge = false;
+            _resetCount = 0;
+            _encounterStartTime = now;
+            WriteEvent("ResetStart", "HoldComplete",
+                $"totalDelay={elapsed:F1}s,holdMs={holdElapsed:F0}ms,stoneScreen=({_monolithScreenPos.X:F0};{_monolithScreenPos.Y:F0})");
+            _phase = FiveWayPhase.Resetting;
+            _phaseStartTime = now;
+            StatusText = "Starting reset loop — Dash→ShieldCharge cycles";
         }
 
         // ──────────────────────────────────────────────────────────────────────
