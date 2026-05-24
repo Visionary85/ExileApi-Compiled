@@ -55,7 +55,7 @@ namespace AutoExile.Modes
         // DashCooldownMs (2210ms) alone gives only ~2010ms actual in-ring time after SC
         // animation completes, barely meeting the 2s requirement. This adds safety margin
         // so the crystal reliably resets each cycle.
-        private const float InRingExtraHoldMs = 500f;
+        private const float InRingExtraHoldMs = 700f;
 
         // Brief settle after navigation stops before the first Dash fires.
         // Gives the camera time to stabilise so the monolith screen position is accurate.
