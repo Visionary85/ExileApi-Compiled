@@ -533,7 +533,7 @@ namespace AutoExile.Modes
                 var gc = ctx.Game;
                 if (_monolithPos.HasValue)
                 {
-                    var worldPos = Pathfinding.GridToWorld3D(gc, _monolithPos.Value);
+                    var worldPos = AutoExile.Systems.Pathfinding.GridToWorld3D(gc, _monolithPos.Value);
                     var screenPos2 = gc.IngameState.Camera.WorldToScreen(worldPos);
                     _monolithScreenPos = new Vector2(screenPos2.X, screenPos2.Y);
                 }
@@ -598,7 +598,7 @@ namespace AutoExile.Modes
             if (_monolithPos.HasValue)
             {
                 var gc2 = ctx.Game;
-                var wp = Pathfinding.GridToWorld3D(gc2, _monolithPos.Value);
+                var wp = AutoExile.Systems.Pathfinding.GridToWorld3D(gc2, _monolithPos.Value);
                 var sp = gc2.IngameState.Camera.WorldToScreen(wp);
                 _monolithScreenPos = new Vector2(sp.X, sp.Y);
             }
