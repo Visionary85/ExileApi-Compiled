@@ -55,7 +55,7 @@ namespace AutoExile.Modes
         // DashCooldownMs (2210ms) alone gives only ~2010ms actual in-ring time after SC
         // animation completes, barely meeting the 2s requirement. This adds safety margin
         // so the crystal reliably resets each cycle.
-        private const float InRingExtraHoldMs = 1540f;
+        private const float InRingExtraHoldMs = 1790f;
 
         // Brief settle after navigation stops before the first Dash fires.
         // Gives the camera time to stabilise so the monolith screen position is accurate.
@@ -286,8 +286,7 @@ namespace AutoExile.Modes
             ctx.Combat.SuppressTargetedSkills = inDomain;
             ctx.Combat.SuppressPositioning = inDomain && (
                 _phase == FiveWayPhase.WarmupDelay ||
-                _phase == FiveWayPhase.Resetting ||
-                _phase == FiveWayPhase.EncounterEnded);
+                _phase == FiveWayPhase.Resetting);
 
             var phaseBefore = _phase;
 
@@ -749,14 +748,47 @@ namespace AutoExile.Modes
 
         // ──────────────────────────────────────────────────────────────────────
         // Phase: EncounterEnded
-        // Hold position until the area transition carries everyone back to hideout.
+        // Find the exit portal and leave the domain immediately.
+        // Bot waits in hideout until the carry is ready for the next run.
         // ──────────────────────────────────────────────────────────────────────
 
         private void TickEncounterEnded(BotContext ctx)
         {
-            ctx.Navigation.Stop(ctx.Game);
+            var gc = ctx.Game;
             var elapsed = (DateTime.Now - _phaseStartTime).TotalSeconds;
-            StatusText = $"Waiting for party to loot and exit ({elapsed:F0}s)";
+
+            // Brief settle so last reset animation finishes before moving
+            if (elapsed < 2.0)
+            {
+                StatusText = $"Encounter over — leaving in {2.0 - elapsed:F1}s";
+                return;
+            }
+
+            var playerGrid = new Vector2(gc.Player.GridPosNum.X, gc.Player.GridPosNum.Y);
+            var portal = FindNearestPortal(gc, playerGrid, 200f);
+
+            if (portal == null)
+            {
+                StatusText = "Encounter over — searching for exit portal";
+                return;
+            }
+
+            var dist = Vector2.Distance(playerGrid,
+                new Vector2(portal.GridPosNum.X, portal.GridPosNum.Y));
+
+            if (dist > 15f)
+            {
+                if (!ctx.Navigation.IsNavigating)
+                    ctx.Navigation.NavigateTo(gc,
+                        new Vector2(portal.GridPosNum.X, portal.GridPosNum.Y));
+                StatusText = $"Leaving domain — moving to portal (dist: {dist:F0})";
+                return;
+            }
+
+            WriteEvent("ExitDomain", "EncounterEnded",
+                $"kills={_killCount},resets={_resetCount}");
+            TryEnterPortal(ctx, portal);
+            StatusText = "Exiting domain to hideout";
         }
 
         // ──────────────────────────────────────────────────────────────────────
