@@ -57,9 +57,11 @@ namespace AutoExile.Modes
         private const float EncounterDurationSeconds = 305f;
 
         // Grid distance at which the bot stops and considers itself positioned at the ring edge.
-        // The ring in Domain of Timeless Conflict is ~20-22 grid units radius.
-        // Arriving at 18 units puts the bot just inside the ring boundary — ideal for Dash-exit.
-        private const float MonolithArrivalDist = 18f;
+        // The LegionEndlessInitiator entity origin is at the centre of the stone structure.
+        // The stone itself is ~40 grid units in radius — the pathfinder stops at the outer
+        // surface and cannot walk inside. That surface IS the ring boundary, so 50 gives
+        // comfortable arrival headroom regardless of which side the bot approaches from.
+        private const float MonolithArrivalDist = 50f;
 
         // Grid distance at which we stop following the leader while in the hideout.
         private const float FollowStopDist = 12f;
