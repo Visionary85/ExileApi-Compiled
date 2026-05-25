@@ -74,6 +74,12 @@ namespace AutoExile.Modes
         // comfortable arrival headroom regardless of which side the bot approaches from.
         private const float MonolithArrivalDist = 50f;
 
+        // Distance from the monolith centre to aim for on the SE side of the ring.
+        // Bot always navigates toward this specific point so it plants on the same side
+        // every run regardless of spawn position. 45 units puts us just outside the
+        // stone edge (~40 unit radius). SE in grid space = +X, +Y direction.
+        private const float RingEdgeSEOffset = 45f;
+
         // Grid distance at which we stop following the leader while in the hideout.
         private const float FollowStopDist = 12f;
 
@@ -118,6 +124,11 @@ namespace AutoExile.Modes
         private float _warmupDelay;
         private int _resetCount;                                    // number of complete Dash→SC cycles
         private DateTime _crystalExplodedAt = DateTime.MinValue;   // when crystal explosion was detected
+
+        // Fixed SE ring-edge waypoint computed once when the monolith is located.
+        // Always navigate here rather than toward the centre so the bot plants on
+        // the same side of the stone every run.
+        private Vector2? _ringEdgeTarget;
 
         // Cached screen-space position of the monolith stone centre.
         // Cursor stays fixed here: Shield Charge moves TOWARD cursor (stone is solid, stops the
@@ -184,6 +195,7 @@ namespace AutoExile.Modes
             _countedKills.Clear();
             _killCount = 0;
             _sessionKillCount = 0;
+            _ringEdgeTarget = null;
 
             _lastStateSnap = DateTime.MinValue;
             _lastLoggedPos = Vector2.Zero;
@@ -251,6 +263,7 @@ namespace AutoExile.Modes
                 _killCount = 0;
                 _countedKills.Clear();
                 _encounterStartTime = DateTime.MinValue;
+                _ringEdgeTarget = null;
                 // Reset leader tracking so we don't immediately re-enter via stale last position
                 _hasLastLeaderPos = false;
                 _leaderLastSeenAt = DateTime.MinValue;
@@ -549,32 +562,43 @@ namespace AutoExile.Modes
 
             var gc = ctx.Game;
             var playerGrid = new Vector2(gc.Player.GridPosNum.X, gc.Player.GridPosNum.Y);
-            var dist = Vector2.Distance(playerGrid, _monolithPos.Value);
 
-            if (dist <= MonolithArrivalDist)
+            // Prefer the SE waypoint; fall back to monolith centre if it was never computed.
+            var navTarget = _ringEdgeTarget ?? _monolithPos.Value;
+
+            // Arrival check: within 12 grid units of the SE target (or MonolithArrivalDist
+            // from centre as a safety net if no SE target exists).
+            var arrived = _ringEdgeTarget.HasValue
+                ? Vector2.Distance(playerGrid, _ringEdgeTarget.Value) <= 12f
+                : Vector2.Distance(playerGrid, _monolithPos.Value) <= MonolithArrivalDist;
+
+            if (arrived)
             {
                 ctx.Navigation.Stop(gc);
+                var distToMono = Vector2.Distance(playerGrid, _monolithPos.Value);
                 _warmupDelay = RandRange(WarmupMinSeconds, WarmupMaxSeconds);
-                WriteEvent("AtRingEdge", $"dist={dist:F0}", $"warmup={_warmupDelay:F1}s");
+                WriteEvent("AtRingEdge", $"dist={distToMono:F0}", $"warmup={_warmupDelay:F1}s");
                 _phase = FiveWayPhase.WarmupDelay;
                 _phaseStartTime = DateTime.Now;
-                StatusText = $"At ring edge — waiting {_warmupDelay:F0}s before resetting";
+                StatusText = $"At SE ring edge — waiting {_warmupDelay:F0}s before resetting";
                 return;
             }
 
             if (!ctx.Navigation.IsNavigating)
             {
-                if (!ctx.Navigation.NavigateTo(gc, _monolithPos.Value))
+                if (!ctx.Navigation.NavigateTo(gc, navTarget))
                 {
-                    WriteEvent("NavFailed", "ToMonolith", $"dist={dist:F0}");
+                    var distToMono = Vector2.Distance(playerGrid, _monolithPos.Value);
+                    WriteEvent("NavFailed", "ToSERingEdge", $"dist={distToMono:F0}");
                     _warmupDelay = RandRange(WarmupMinSeconds, WarmupMaxSeconds);
                     _phase = FiveWayPhase.WarmupDelay;
                     _phaseStartTime = DateTime.Now;
-                    StatusText = "No path to monolith — resetting from current position";
+                    StatusText = "No path to SE edge — resetting from current position";
                 }
             }
 
-            StatusText = $"Navigating to ring edge (dist: {dist:F0})";
+            var distToTarget = Vector2.Distance(playerGrid, navTarget);
+            StatusText = $"Navigating to ring edge (dist: {distToTarget:F0})";
         }
 
         // ──────────────────────────────────────────────────────────────────────
@@ -805,9 +829,14 @@ namespace AutoExile.Modes
         private void TransitionToNav(BotContext ctx)
         {
             ctx.Navigation.Stop(ctx.Game);
+            if (_monolithPos.HasValue)
+            {
+                var seDir = Vector2.Normalize(new Vector2(1f, 1f));  // SE: +X +Y in grid space
+                _ringEdgeTarget = _monolithPos.Value + seDir * RingEdgeSEOffset;
+            }
             _phase = FiveWayPhase.NavigatingToMonolith;
             _phaseStartTime = DateTime.Now;
-            StatusText = "Monolith located — navigating to ring edge";
+            StatusText = "Monolith located — navigating to SE ring edge";
         }
 
         private static bool IsInDomain(GameController gc) =>
