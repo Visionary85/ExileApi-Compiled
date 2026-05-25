@@ -235,9 +235,9 @@ namespace AutoExile.Modes
                 var encElapsed = _encounterStartTime == DateTime.MinValue
                     ? 0 : (DateTime.Now - _encounterStartTime).TotalSeconds;
 
-                // Theoretical max resets = encounter duration / Dash cooldown
+                // Theoretical max resets = encounter duration / full cycle (Dash + hold)
                 var theoreticalMax = encElapsed > 0
-                    ? (int)(encElapsed / (DashCooldownMs / 1000f)) : 0;
+                    ? (int)(encElapsed / ((DashCooldownMs + InRingExtraHoldMs) / 1000f)) : 0;
                 var efficiency = theoreticalMax > 0
                     ? (float)_resetCount / theoreticalMax * 100f : 0f;
 
