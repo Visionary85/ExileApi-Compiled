@@ -1,0 +1,21 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <PlatformTarget>x64</PlatformTarget>
+    <Nullable>enable</Nullable>
+    <LangVersion>latest</LangVersion>
+    <AssemblyName>PoE2Overlay</AssemblyName>
+    <RootNamespace>PoE2Overlay</RootNamespace>
+    <!-- Single-file publish: dotnet publish -r win-x64 -p:PublishSingleFile=true -->
+    <SelfContained>false</SelfContained>
+  </PropertyGroup>
+  <ItemGroup>
+    <!--
+      ClickableTransparentOverlay (by zaafar) provides the transparent always-on-top
+      DirectX window that renders over PoE2.  Version pinned to match ExileCore binaries.
+      ImGui.NET is pulled in automatically as a transitive dependency.
+    -->
+    <PackageReference Include="ClickableTransparentOverlay" Version="9.1.0" />
+  </ItemGroup>
+</Project>
