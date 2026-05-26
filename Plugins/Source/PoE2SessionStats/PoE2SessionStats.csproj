@@ -1,0 +1,24 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <OutputType>Library</OutputType>
+    <UseWindowsForms>true</UseWindowsForms>
+    <PlatformTarget>x64</PlatformTarget>
+    <LangVersion>latest</LangVersion>
+    <DebugType>embedded</DebugType>
+    <PathMap>$(MSBuildProjectDirectory)=$(MSBuildProjectName)</PathMap>
+    <EmbedAllSources>true</EmbedAllSources>
+    <OutputPath Condition="'$(ExApiPluginOutputPath)' != ''">$(ExApiPluginOutputPath)$(MSBuildProjectName)</OutputPath>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Reference Include="ExileCore2">
+      <HintPath>$(exileCore2Package)\ExileCore2.dll</HintPath>
+      <Private>False</Private>
+    </Reference>
+    <Reference Include="GameOffsets2">
+      <HintPath>$(exileCore2Package)\GameOffsets2.dll</HintPath>
+      <Private>False</Private>
+    </Reference>
+  </ItemGroup>
+</Project>
