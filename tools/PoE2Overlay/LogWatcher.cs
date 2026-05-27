@@ -173,6 +173,17 @@ sealed class LogWatcher : IDisposable
         ZoneChanged?.Invoke(zone, act);
     }
 
+    public void Restart(string customPath)
+    {
+        _fsw?.Dispose();
+        _pollTimer?.Dispose();
+        _fsw = null;
+        _pollTimer = null;
+        _lastPos = 0;
+        _lastZone = null;
+        Start(customPath);
+    }
+
     public void Dispose()
     {
         _disposed = true;

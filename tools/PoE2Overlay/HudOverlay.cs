@@ -87,7 +87,12 @@ sealed class HudOverlay : Overlay
         var actIdx = Math.Clamp(_act, 0, ActColors.Length - 1);
         var actCol = ActColors[actIdx];
 
-        if (_act > 0)
+        if (_watcher.LogPath is null)
+        {
+            ImGui.TextColored(new Vector4(1f, 0.3f, 0.3f, 1f), "[!] Client.txt not found");
+            ImGui.TextDisabled("Click = > check log path, or set path manually");
+        }
+        else if (_act > 0)
         {
             ImGui.TextColored(actCol, $"Act {_act}");
             ImGui.SameLine();
@@ -139,10 +144,12 @@ sealed class HudOverlay : Overlay
         if (!open) Environment.Exit(0);
     }
 
+    string _customLogPath = "";
+
     void RenderSettingsPanel()
     {
         ImGui.SetNextWindowPos(new Vector2(_windowPos.X + 410, _windowPos.Y), ImGuiCond.FirstUseEver);
-        ImGui.SetNextWindowSize(new Vector2(260, 180), ImGuiCond.Always);
+        ImGui.SetNextWindowSize(new Vector2(420, 230), ImGuiCond.Always);
         ImGui.SetNextWindowBgAlpha(0.90f);
 
         bool settingsOpen = true;
@@ -154,7 +161,25 @@ sealed class HudOverlay : Overlay
         ImGui.Checkbox("Pin window (no drag)", ref _pinWindow);
 
         ImGui.Separator();
-        ImGui.TextDisabled($"Log: {_watcher.LogPath ?? "not found"}");
+
+        if (_watcher.LogPath is null)
+            ImGui.TextColored(new Vector4(1f, 0.4f, 0.4f, 1f), "Client.txt: NOT FOUND");
+        else
+            ImGui.TextColored(new Vector4(0.4f, 1f, 0.5f, 1f), "Client.txt: FOUND");
+
+        ImGui.TextDisabled(_watcher.LogPath ?? "Auto-detection failed — set path below");
+        ImGui.Spacing();
+        ImGui.Text("Custom path (paste and press Enter):");
+        ImGui.SetNextItemWidth(400);
+        if (ImGui.InputText("##logpath", ref _customLogPath, 512, ImGuiInputTextFlags.EnterReturnsTrue))
+        {
+            if (File.Exists(_customLogPath))
+            {
+                _watcher.Restart(_customLogPath);
+                _zone = "Waiting for zone...";
+                _act  = 0;
+            }
+        }
 
         ImGui.End();
 
