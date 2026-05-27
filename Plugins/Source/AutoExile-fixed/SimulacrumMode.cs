@@ -110,6 +110,27 @@ namespace AutoExile.Modes
         private const float DeadZoneUnstickSeconds = 15f;
         private const float MovementThresholdGrid = 3f;
 
+        // Zero-cached escalated arena sweep — when nearby and cached both stay at 0 for this long
+        // during an active wave, the bot abandons its monolith orbit and sweeps the full arena in
+        // 8 directions at large radius to flush out any stuck/unreachable monster.
+        private const float ZeroCachedEscalateSecs = 20f;
+        private const float SweepCornerRadius = 180f;
+        private const float SweepCornerArrivalDist = 25f;
+        private const float SweepCornerDwellSecs = 3f;
+        private static readonly Vector2[] SweepDirs = {
+            new Vector2( 0f,        -1f      ),   // N
+            new Vector2( 0.7071f,  -0.7071f  ),   // NE
+            new Vector2( 1f,         0f      ),   // E
+            new Vector2( 0.7071f,   0.7071f  ),   // SE
+            new Vector2( 0f,         1f      ),   // S
+            new Vector2(-0.7071f,   0.7071f  ),   // SW
+            new Vector2(-1f,         0f      ),   // W
+            new Vector2(-0.7071f,  -0.7071f  ),   // NW
+        };
+        private DateTime _zeroCachedAt = DateTime.MinValue;
+        private int _sweepCornerIdx;
+        private DateTime _sweepCornerArrivedAt = DateTime.MinValue;
+
         // Monster blacklist — temporarily ignore monsters we can't kill so we reposition via explore
         private readonly Dictionary<long, DateTime> _blacklistedMonsters = new();
         private const float MonsterBlacklistSeconds = 10f;
@@ -182,6 +203,9 @@ namespace AutoExile.Modes
             _combatEngageMaxTotal = 0;
             _blacklistedMonsters.Clear();
             _lastMovementAt = DateTime.MinValue;
+            _zeroCachedAt = DateTime.MinValue;
+            _sweepCornerIdx = 0;
+            _sweepCornerArrivedAt = DateTime.MinValue;
 
             _finalWaveNoMonstersAt = DateTime.MinValue;
 
@@ -932,6 +956,28 @@ namespace AutoExile.Modes
                     _combatEngageCount = 0;
                     _combatEngageMaxTotal = 0;
 
+                    if (ctx.Combat.CachedMonsterCount == 0)
+                    {
+                        if (_zeroCachedAt == DateTime.MinValue)
+                        {
+                            _zeroCachedAt = DateTime.Now;
+                            _sweepCornerIdx = 0;
+                            _sweepCornerArrivedAt = DateTime.MinValue;
+                        }
+                        var zeroCachedSecs = (DateTime.Now - _zeroCachedAt).TotalSeconds;
+                        if (zeroCachedSecs >= ZeroCachedEscalateSecs)
+                        {
+                            TickArenaCornerSweep(ctx);
+                            return;
+                        }
+                    }
+                    else
+                    {
+                        _zeroCachedAt = DateTime.MinValue;
+                        _sweepCornerIdx = 0;
+                        _sweepCornerArrivedAt = DateTime.MinValue;
+                    }
+
                     Decision = $"Wave {_state.WavesCompleted + 1} — patrolling ({ctx.Combat.CachedMonsterCount} distant)";
                     TickExploreForMonsters(ctx);
                 }
@@ -1325,6 +1371,59 @@ namespace AutoExile.Modes
             }
 
             StatusText = $"Wave {_state.WavesCompleted + 1}/{SimulacrumState.MaxWavesInEncounter} — searching (no exploration targets)";
+        }
+
+        // ═══════════════════════════════════════════════════
+        // Escalated arena sweep — 8-direction walk when cached == 0 for too long
+        // ═══════════════════════════════════════════════════
+
+        private void TickArenaCornerSweep(BotContext ctx)
+        {
+            var gc = ctx.Game;
+            var playerPos = new Vector2(gc.Player.GridPosNum.X, gc.Player.GridPosNum.Y);
+            var wave = _state.WavesCompleted + 1;
+
+            if (!_state.MonolithPosition.HasValue || _sweepCornerIdx >= SweepDirs.Length)
+            {
+                // All 8 corners checked — nothing found; let the wave timeout handle it
+                Decision = $"Wave {wave} — full arena sweep done, waiting for wave end";
+                StatusText = $"Wave {wave}/{SimulacrumState.MaxWavesInEncounter} — sweep exhausted, wave ending...";
+                TickExploreForMonsters(ctx);
+                return;
+            }
+
+            var target = _state.MonolithPosition.Value + SweepDirs[_sweepCornerIdx] * SweepCornerRadius;
+            var distToTarget = Vector2.Distance(playerPos, target);
+
+            if (distToTarget <= SweepCornerArrivalDist)
+            {
+                if (_sweepCornerArrivedAt == DateTime.MinValue)
+                {
+                    _sweepCornerArrivedAt = DateTime.Now;
+                    WriteEvent("SweepCornerReached", $"Wave {wave}",
+                        $"corner={_sweepCornerIdx};pos=({target.X:F0};{target.Y:F0});zeroCachedSecs={(DateTime.Now - _zeroCachedAt).TotalSeconds:F0}");
+                }
+
+                if ((DateTime.Now - _sweepCornerArrivedAt).TotalSeconds >= SweepCornerDwellSecs)
+                {
+                    _sweepCornerIdx++;
+                    _sweepCornerArrivedAt = DateTime.MinValue;
+                }
+
+                Decision = $"Wave {wave} — arena sweep {_sweepCornerIdx + 1}/{SweepDirs.Length} (dwelling)";
+                StatusText = $"Wave {wave}/{SimulacrumState.MaxWavesInEncounter} — arena sweep {_sweepCornerIdx + 1}/8";
+            }
+            else
+            {
+                if (!ctx.Navigation.IsNavigating)
+                {
+                    WriteEvent("SweepCornerNav", $"Wave {wave}",
+                        $"corner={_sweepCornerIdx};target=({target.X:F0};{target.Y:F0});dist={distToTarget:F0};zeroCachedSecs={(DateTime.Now - _zeroCachedAt).TotalSeconds:F0}");
+                    ctx.Navigation.NavigateTo(gc, target);
+                }
+                Decision = $"Wave {wave} — arena sweep {_sweepCornerIdx + 1}/{SweepDirs.Length} → ({target.X:F0},{target.Y:F0}) dist:{distToTarget:F0}";
+                StatusText = $"Wave {wave}/{SimulacrumState.MaxWavesInEncounter} — arena sweep {_sweepCornerIdx + 1}/8 (dist: {distToTarget:F0})";
+            }
         }
 
         // ═══════════════════════════════════════════════════
