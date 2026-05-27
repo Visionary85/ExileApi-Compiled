@@ -64,19 +64,86 @@ sealed class LogWatcher : IDisposable
 
     static string? FindLog()
     {
-        var candidates = new[]
+        // Documents path works for any install location (GGG sometimes writes here too)
+        var docs = Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments);
+        var docsLog = Path.Combine(docs, @"My Games\Path of Exile 2\logs\Client.txt");
+        if (File.Exists(docsLog)) return docsLog;
+
+        // Steam: read install path from registry, then parse all Steam library folders
+        var steamLog = FindSteamLog();
+        if (steamLog is not null) return steamLog;
+
+        // Non-Steam: scan every fixed drive for common install patterns
+        var patterns = new[]
         {
-            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments),
-                @"My Games\Path of Exile 2\logs\Client.txt"),
-            @"C:\Program Files (x86)\Grinding Gear Games\Path of Exile 2\logs\Client.txt",
-            @"C:\Program Files (x86)\Steam\steamapps\common\Path of Exile 2\logs\Client.txt",
-            @"C:\Program Files\Epic Games\PathOfExile2\logs\Client.txt",
-            @"C:\Daum Games\Path of Exile2\logs\Client.txt",
-            @"C:\Daum Games\Path of Exile2\logs\KakaoClient.txt",
+            @"Program Files (x86)\Grinding Gear Games\Path of Exile 2\logs\Client.txt",
+            @"Program Files\Epic Games\PathOfExile2\logs\Client.txt",
+            @"Daum Games\Path of Exile2\logs\Client.txt",
+            @"Daum Games\Path of Exile2\logs\KakaoClient.txt",
         };
 
-        foreach (var p in candidates)
-            if (File.Exists(p)) return p;
+        foreach (var drive in DriveInfo.GetDrives().Where(d => d.DriveType == DriveType.Fixed))
+        {
+            var root = drive.RootDirectory.FullName.TrimEnd('\\');
+            foreach (var pattern in patterns)
+            {
+                var p = Path.Combine(root, pattern);
+                if (File.Exists(p)) return p;
+            }
+        }
+
+        return null;
+    }
+
+    static string? FindSteamLog()
+    {
+        // Find Steam installation via registry
+        string? steamRoot = null;
+        try
+        {
+            using var key =
+                Microsoft.Win32.Registry.LocalMachine.OpenSubKey(@"SOFTWARE\WOW6432Node\Valve\Steam")
+                ?? Microsoft.Win32.Registry.LocalMachine.OpenSubKey(@"SOFTWARE\Valve\Steam");
+            steamRoot = key?.GetValue("InstallPath") as string;
+        }
+        catch { }
+
+        // If registry failed, check common Steam locations on all fixed drives
+        if (steamRoot is null)
+        {
+            var steamPaths = new[] { @"Program Files (x86)\Steam", @"Steam", @"Games\Steam" };
+            foreach (var drive in DriveInfo.GetDrives().Where(d => d.DriveType == DriveType.Fixed))
+            {
+                var root = drive.RootDirectory.FullName.TrimEnd('\\');
+                foreach (var sp in steamPaths)
+                {
+                    var candidate = Path.Combine(root, sp);
+                    if (Directory.Exists(candidate)) { steamRoot = candidate; break; }
+                }
+                if (steamRoot is not null) break;
+            }
+        }
+
+        if (steamRoot is null) return null;
+
+        // Collect all Steam library roots from libraryfolders.vdf
+        var libraries = new List<string> { steamRoot };
+        var vdf = Path.Combine(steamRoot, @"steamapps\libraryfolders.vdf");
+        if (File.Exists(vdf))
+        {
+            foreach (var line in File.ReadAllLines(vdf))
+            {
+                var m = Regex.Match(line, @"""path""\s+""([^""]+)""");
+                if (m.Success) libraries.Add(m.Groups[1].Value.Replace(@"\\", @"\"));
+            }
+        }
+
+        // Check each library for the PoE2 log file
+        foreach (var lib in libraries)
+        {
+            var log = Path.Combine(lib, @"steamapps\common\Path of Exile 2\logs\Client.txt");
+            if (File.Exists(log)) return log;
+        }
 
         return null;
     }
