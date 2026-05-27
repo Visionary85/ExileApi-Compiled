@@ -1,3 +1,5 @@
+using System.Collections.Generic;
+
 namespace PoE2Overlay;
 
 public enum StepType { Move, Kill, Talk, Waypoint, Interact, Pickup, Portal, Note }

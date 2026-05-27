@@ -4,6 +4,7 @@
     <TargetFramework>net8.0-windows</TargetFramework>
     <PlatformTarget>x64</PlatformTarget>
     <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
     <LangVersion>latest</LangVersion>
     <AssemblyName>PoE2Overlay</AssemblyName>
     <RootNamespace>PoE2Overlay</RootNamespace>
