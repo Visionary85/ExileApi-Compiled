@@ -130,6 +130,9 @@ namespace AutoExile.Modes
         private DateTime _zeroCachedAt = DateTime.MinValue;
         private int _sweepCornerIdx;
         private DateTime _sweepCornerArrivedAt = DateTime.MinValue;
+        private DateTime _sweepCornerNavAt = DateTime.MinValue;
+        private float _sweepCornerBestDist = float.MaxValue;
+        private const float SweepCornerNavTimeoutSecs = 8f;
 
         // Monster blacklist — temporarily ignore monsters we can't kill so we reposition via explore
         private readonly Dictionary<long, DateTime> _blacklistedMonsters = new();
@@ -206,6 +209,8 @@ namespace AutoExile.Modes
             _zeroCachedAt = DateTime.MinValue;
             _sweepCornerIdx = 0;
             _sweepCornerArrivedAt = DateTime.MinValue;
+            _sweepCornerNavAt = DateTime.MinValue;
+            _sweepCornerBestDist = float.MaxValue;
 
             _finalWaveNoMonstersAt = DateTime.MinValue;
 
@@ -548,6 +553,11 @@ namespace AutoExile.Modes
                 _combatEngageMaxTotal = 0;
                 _blacklistedMonsters.Clear();
                 _lastMovementAt = DateTime.MinValue;
+                _zeroCachedAt = DateTime.MinValue;
+                _sweepCornerIdx = 0;
+                _sweepCornerArrivedAt = DateTime.MinValue;
+                _sweepCornerNavAt = DateTime.MinValue;
+                _sweepCornerBestDist = float.MaxValue;
                 _finalWaveNoMonstersAt = DateTime.MinValue;
                 _prevWaveActive = false;
                 _waveActiveStartTime = DateTime.MinValue;
@@ -976,6 +986,8 @@ namespace AutoExile.Modes
                         _zeroCachedAt = DateTime.MinValue;
                         _sweepCornerIdx = 0;
                         _sweepCornerArrivedAt = DateTime.MinValue;
+                        _sweepCornerNavAt = DateTime.MinValue;
+                        _sweepCornerBestDist = float.MaxValue;
                     }
 
                     Decision = $"Wave {_state.WavesCompleted + 1} — patrolling ({ctx.Combat.CachedMonsterCount} distant)";
@@ -1408,6 +1420,8 @@ namespace AutoExile.Modes
                 {
                     _sweepCornerIdx++;
                     _sweepCornerArrivedAt = DateTime.MinValue;
+                    _sweepCornerNavAt = DateTime.MinValue;
+                    _sweepCornerBestDist = float.MaxValue;
                 }
 
                 Decision = $"Wave {wave} — arena sweep {_sweepCornerIdx + 1}/{SweepDirs.Length} (dwelling)";
@@ -1415,10 +1429,34 @@ namespace AutoExile.Modes
             }
             else
             {
+                // Track best distance achieved toward this corner
+                if (distToTarget < _sweepCornerBestDist)
+                    _sweepCornerBestDist = distToTarget;
+
+                // If we've been navigating to this corner for too long without arriving,
+                // it's unreachable (arena wall / terrain). Skip to the next corner.
+                if (_sweepCornerNavAt != DateTime.MinValue &&
+                    (DateTime.Now - _sweepCornerNavAt).TotalSeconds > SweepCornerNavTimeoutSecs)
+                {
+                    WriteEvent("SweepCornerSkipped", $"Wave {wave}",
+                        $"corner={_sweepCornerIdx};target=({target.X:F0};{target.Y:F0});bestDist={_sweepCornerBestDist:F0};zeroCachedSecs={(DateTime.Now - _zeroCachedAt).TotalSeconds:F0}");
+                    _sweepCornerIdx++;
+                    _sweepCornerArrivedAt = DateTime.MinValue;
+                    _sweepCornerNavAt = DateTime.MinValue;
+                    _sweepCornerBestDist = float.MaxValue;
+                    ctx.Navigation.Stop(gc);
+                    return;
+                }
+
                 if (!ctx.Navigation.IsNavigating)
                 {
-                    WriteEvent("SweepCornerNav", $"Wave {wave}",
-                        $"corner={_sweepCornerIdx};target=({target.X:F0};{target.Y:F0});dist={distToTarget:F0};zeroCachedSecs={(DateTime.Now - _zeroCachedAt).TotalSeconds:F0}");
+                    // Only log the first navigation attempt per corner to avoid log spam
+                    if (_sweepCornerNavAt == DateTime.MinValue)
+                    {
+                        _sweepCornerNavAt = DateTime.Now;
+                        WriteEvent("SweepCornerNav", $"Wave {wave}",
+                            $"corner={_sweepCornerIdx};target=({target.X:F0};{target.Y:F0});dist={distToTarget:F0};zeroCachedSecs={(DateTime.Now - _zeroCachedAt).TotalSeconds:F0}");
+                    }
                     ctx.Navigation.NavigateTo(gc, target);
                 }
                 Decision = $"Wave {wave} — arena sweep {_sweepCornerIdx + 1}/{SweepDirs.Length} → ({target.X:F0},{target.Y:F0}) dist:{distToTarget:F0}";
